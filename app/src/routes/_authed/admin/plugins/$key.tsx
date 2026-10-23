@@ -13,6 +13,13 @@ import {
   PageSection,
   PageShell,
 } from "@/components/layout/page-shell";
+import { AccessRequestsSection } from "@/components/plugins/access-requests";
+import { AccountModeDialog } from "@/components/plugins/account-mode-dialog";
+import {
+  BrokeredAccountRow,
+  useBrokeredAccount,
+} from "@/components/plugins/brokered-account-row";
+import { SkippedToolsNotice } from "@/components/plugins/skipped-tools-notice";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -35,7 +42,7 @@ import {
 } from "@/components/ui/item";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { useBotNames } from "@/lib/agents/bot-names";
+import { grantRoster } from "@/lib/agents/grant-roster";
 import { agentListQueryOptions } from "@/lib/agents/queries";
 import { storeMcpToken } from "@/lib/credentials/mutations";
 import {
@@ -48,9 +55,24 @@ import {
   removePluginServerMutationOptions,
 } from "@/lib/plugins/mutations";
 import {
+  type CatalogueItem,
   connectionsQueryOptions,
+  type PluginServer,
+  personalConnections,
   pluginsPageQueryOptions,
+  pluginsProvider,
 } from "@/lib/plugins/queries";
+import {
+  brokeredConnectionDescription,
+  brokeredDisconnectNote,
+  brokeredPerActionTrip,
+  brokeredProvenance,
+  brokeredReach,
+} from "@/lib/plugins/provider-vocabulary";
+import {
+  botSharedAppsQueryOptions,
+  describeApproval,
+} from "@/lib/plugins/shared-use";
 
 /**
  * One vendor: what it needs from this deployment, and which Bots hold its tools.
@@ -90,10 +112,105 @@ function grantSummary(held: number, total: number): string {
   return `${held} of ${total} Bots`;
 }
 
+/**
+ * How much of this vendor one Bot holds, in the same voice as {@link grantSummary}.
+ *
+ * The same decision counted the other way round, for the rows that open a Bot's own page against
+ * this app. Named ends rather than a fraction, for the reason recorded above: "0/167" reads as a
+ * score, and the two answers worth recognising without reading are none of it and all of it.
+ */
+function heldSummary(held: number, total: number): string {
+  if (held === 0) return "No tools";
+  if (held === total) return total === 1 ? "1 tool" : "Every tool";
+  return `${held} of ${total} tools`;
+}
+
+/**
+ * One Bot's standing with the shared account behind THIS app, read off its own exposure.
+ *
+ * Nothing when the Bot does not hold this app at all — `sharedAppsHeldBy` only lists apps a Bot has
+ * at least one grant on, so there is no shared account for it to stand with yet — and nothing while
+ * the fetch is still open, so no stale answer flashes ahead of the real one. "Not approved" matches
+ * the word the shared-use inbox uses for the same absence (`shared-use-requests.tsx`), so an
+ * administrator reads the same two words for the same fact wherever it comes up.
+ */
+function BotApprovalText({
+  botId,
+  serverId,
+}: {
+  botId: string;
+  serverId: string;
+}) {
+  const exposure = useQuery(botSharedAppsQueryOptions(botId));
+  const app = exposure.data?.apps.find((one) => one.serverId === serverId);
+  if (!app) return null;
+  return (
+    <span className="text-muted-foreground text-xs">
+      {app.approval ? describeApproval(app.approval) : "Not approved"}
+    </span>
+  );
+}
+
+/**
+ * How this vendor is reached, from whichever record we have.
+ *
+ * The row's own provenance is asked first because it is a fact this deployment recorded when the
+ * app was enabled, not an inference: a brokered app is reached through Composio whatever the
+ * catalogue does or does not say about it.
+ *
+ * That order matters because the catalogue has nothing to say about a brokered app — it is not a
+ * curated entry — and what stood here was `entry?.auth ?? "deployment-bearer"`: a guess, and the
+ * one guess that is wrong for the one row shape that cannot hold a token. The page then offered
+ * "one credential, used for everybody" to the connector whose whole point is that each person
+ * connects their own account, and would have stored a token nothing ever reads.
+ *
+ * A server an administrator added by URL is still the fallback's case, and still correct there:
+ * nothing about it is reached as a person, so it gets the shared-token shape.
+ */
+export function connectionKindFor(
+  server: PluginServer | undefined,
+  auth: CatalogueItem["auth"] | undefined,
+): CatalogueItem["auth"] | "brokered" {
+  if (server && brokeredProvenance(server.provenance)) return "brokered";
+  return auth ?? "deployment-bearer";
+}
+
+/**
+ * A row whose whole content is connection state, standing in for it when it could not be read.
+ *
+ * DRAWN BY BOTH ROWS THAT READ `/api/plugins/connections` — the brokered account and the
+ * `user-oauth` one — because the defaulting they suffer from is the same and so is the honest
+ * answer to it. Neither is drawn on a deployment-token server, which has no connection state to
+ * fail on.
+ *
+ * IN THE ROW'S OWN PLACE, so the card keeps its shape and the sentence sits where the thing it is
+ * about would have been. What it must not say is anything about whether an account exists: the
+ * whole defect is that a failed read defaulted to "not connected", and a second sentence guessing
+ * in the other direction would be the same mistake with better manners.
+ *
+ * `role="alert"` rather than plain text, because this appears in place of a row that carried
+ * buttons — somebody reading with a screen reader has to be told the controls are gone and why,
+ * not left to notice their absence.
+ */
+function ConnectionStateUnreadable() {
+  return (
+    <Item size="sm">
+      <ItemContent>
+        <ItemTitle>Your account</ItemTitle>
+        <ItemDescription role="alert">
+          Couldn't load whether you've connected an account here. Reload the
+          page, or check this deployment's logs if it keeps happening.
+        </ItemDescription>
+      </ItemContent>
+    </Item>
+  );
+}
+
 function RouteComponent() {
   const { key } = useParams({ from: "/_authed/admin/plugins/$key" });
   const queryClient = useQueryClient();
   const plugins = useQuery(pluginsPageQueryOptions());
+  const provider = pluginsProvider(plugins.data);
   /*
    * The administrator's OWN connections, not the deployment's.
    *
@@ -104,13 +221,48 @@ function RouteComponent() {
    */
   const connections = useQuery(connectionsQueryOptions());
   const { data: agents } = useQuery(agentListQueryOptions());
-  const youConnected = (connections.data?.connections ?? []).some(
-    (row) => row.serverId === key,
-  );
-  const nameFor = useBotNames();
+  /* The ones this person has hidden, so a grant one of them holds is still on this page. */
+  const { data: hiddenAgents } = useQuery(agentListQueryOptions(true));
+  /*
+   * The row itself rather than whether there is one, because the brokered row below wants what the
+   * last re-check found and that is written on this same row. Asking a second time for it would be
+   * a second answer to a question this read already carried.
+   *
+   * ONLY THIS PERSON'S OWN ROWS. A Shared app's deployment row arrives on the same read, and taking
+   * it for "you connected" would tell an administrator their own account is live when the one live
+   * account is the team's.
+   */
+  const connection = personalConnections(
+    connections.data?.connections ?? [],
+  ).find((row) => row.serverId === key);
+  const youConnected = connection !== undefined;
+  /*
+   * A CONNECTIONS READ THAT FAILED IS SAID RATHER THAN DEFAULTED, AND ONLY WHERE IT IS READ.
+   *
+   * Nothing read `connections.error` at all, so a 500 from `/api/plugins/connections` degraded an
+   * account whose last check did not come back clean to "not connected" — dropping the sentence and
+   * withdrawing both Re-check and Disconnect — with no error text anywhere on the page.
+   *
+   * WITHHELD PER ROW RATHER THAN PER PAGE, which is the difference between this screen and the
+   * personal one. There, the page's entire content IS connection state, so drawing nothing is the
+   * honest whole answer. Here the page also carries the tools, the grants, Refresh and Remove, none
+   * of which touch this read — and a deployment-token server has no connection state on it at all.
+   * Collapsing the page on this error took an administrator's Remove button away at the exact
+   * moment something was failing, for every plugin in the deployment rather than only the two kinds
+   * that read this.
+   *
+   * BOTH KINDS THAT READ IT, not just the brokered one: the `user-oauth` "Your account" row derives
+   * its whole sentence and its Connect button from {@link youConnected}, which is the same defaulted
+   * `false` the brokered row was getting.
+   */
+  const connectionsUnreadable = connections.error !== null;
 
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<OpenDialog>(null);
+  /** Which way the mode-switch confirmation is asking, or null while it is closed. */
+  const [modeTarget, setModeTarget] = useState<"personal" | "shared" | null>(
+    null,
+  );
   const [token, setToken] = useState("");
   const [instanceHost, setInstanceHost] = useState("");
   const [client, setClient] = useState({ clientId: "", clientSecret: "" });
@@ -160,25 +312,130 @@ function RouteComponent() {
      * shown to this person in their own browser; there is deliberately nothing here that could
      * complete it for them, and nothing about being an administrator changes that.
      */
-    onSuccess: (authorizationUrl) => {
+    onSuccess: (start) => {
+      /*
+       * A 200 with no url on it is not a url to follow. This press is on a `user-oauth` catalogue
+       * entry, whose half of that route always mints one or refuses, so this is the server having
+       * answered something this page does not understand. Assigning it navigated to a page called
+       * `undefined` on this deployment's own origin. See `connectAccountMutationOptions`.
+       *
+       * `{ connected: true }` is a brokered app's answer and never this half's, so it is the same
+       * not-understood answer here.
+       */
+      const authorizationUrl =
+        start !== null && "authorizationUrl" in start
+          ? start.authorizationUrl
+          : null;
+      if (authorizationUrl === null) {
+        setError(
+          "OpenBot got no consent link back, so nothing was connected. Try again, or check this connector's setup if it keeps happening.",
+        );
+        return;
+      }
       window.location.href = authorizationUrl;
     },
   });
   const entry = plugins.data?.catalogue.find((item) => item.key === key);
   const server = plugins.data?.servers.find((item) => item.id === key);
-  const bots = (agents ?? []).map((agent: { id: string }) => ({
-    id: agent.id,
-    name: nameFor(agent.id),
-  }));
-
-  /**
-   * How this vendor is reached, from whichever record we have.
-   *
-   * A server added by URL has no catalogue entry, and nothing about it is reached as a person, so it
-   * falls back to the shared-token shape.
+  /*
+   * Everybody on the roster, and anybody hidden from it who holds one of this app's grants,
+   * withdrawn ones included: see `grantRoster`. Named from the roster rows themselves, because the
+   * id-to-name lookup other admin screens use is built from the visible roster alone.
    */
-  const auth = entry?.auth ?? "deployment-bearer";
+  const bots = grantRoster({
+    roster: agents ?? [],
+    hidden: hiddenAgents ?? [],
+    holders: [
+      ...(server?.tools ?? []).flatMap((tool) => tool.grantedTo),
+      ...(server?.withdrawn ?? []).flatMap((held) => held.grantedTo),
+    ],
+  }).map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    hidden: agent.hidden,
+  }));
+  /*
+   * Every Bot this admin can see, hidden ones included. The mode-switch dialog's dry run can name
+   * a Bot that holds no grant on this app today — the default team rule a Shared switch writes
+   * reaches `*` — or a Bot hidden from the roster that still holds one of this app's grants, so the
+   * lookup has to cover both.
+   */
+  const botNames = Object.fromEntries(
+    [...(agents ?? []), ...(hiddenAgents ?? [])].map((agent) => [
+      agent.id,
+      agent.name,
+    ]),
+  );
+
+  const auth = connectionKindFor(server, entry?.auth);
   const title = entry?.title ?? server?.title ?? key;
+
+  /* Bound once because the brokered row below is told it twice — once inside the whole
+     disconnected sentence and once on its own — and two copies of it would drift. */
+  const reassurance =
+    "Setup is complete without it, and it reaches your documents only.";
+
+  /*
+   * A SHARED APP'S ROW IS THE TEAM ACCOUNT, NOT THIS ADMINISTRATOR'S.
+   *
+   * The deployment row is listed whether or not anything is connected to it, so its presence is not
+   * the answer — its `connected` field is. The hook below is still called once and unconditionally,
+   * per the rules of hooks; what changes is which row feeds it.
+   */
+  const shared = server?.accountMode === "shared";
+  const sharedConnection = (connections.data?.connections ?? []).find(
+    (row) => row.serverId === key && row.holder === "deployment",
+  );
+  const accountRow = shared ? sharedConnection : connection;
+
+  /*
+   * Everything the brokered row below reads and does, shared with the personal connected-accounts
+   * screen that draws the same row. See `brokered-account-row.tsx`.
+   *
+   * `connectSelf` above stays: it is the `user-oauth` row's Connect, which is a different row with
+   * no Disconnect beside it and nothing brokered to confirm.
+   */
+  /*
+   * THE SAME CAPABILITY THE SETTINGS SCREEN READS, and read here for the same reason: this page
+   * draws the brokered row too, so under a per-action broker it offered the one Connect that can
+   * never succeed. Off the declared capability and never off `provider === "arcade"` — see
+   * {@link BrokeredAccount.authorizesPerAction}.
+   */
+  const perActionGrants = plugins.data?.authorizesPerAction ?? false;
+  const brokeredAccount = useBrokeredAccount({
+    authScheme: server?.authScheme ?? null,
+    authorizesPerAction: perActionGrants,
+    brokered: auth === "brokered",
+    configured: plugins.data?.composioConfigured ?? false,
+    recorded: shared ? (sharedConnection?.connected ?? false) : youConnected,
+    report: setError,
+    // Back to this page afterwards, not to the personal settings screen.
+    returnTo: "admin",
+    serverId: key,
+    /*
+     * Absent where this person has never connected the app, and false rather than asserted: with no
+     * row there is nothing that could have been checked, which is exactly what the server's own
+     * columns default to. The three are optional on the type because that endpoint concatenates two
+     * reads and only a brokered row carries them.
+     */
+    verified: accountRow?.verified ?? false,
+    verifiedAt: accountRow?.verifiedAt ?? null,
+    /*
+     * AND THIS ONE IS NOT FLATTENED, for the reason the personal screen gives: the two above fall
+     * back on the server's own column defaults, while a null here is the server's record that the
+     * last check spent nothing — not the absence of a record. The row draws a different sentence
+     * for each, so the difference has to reach it.
+     */
+    probe: accountRow?.probe,
+    /*
+     * WHILE THIS ONE IS, for the reason that screen gives too: it is the Re-check button's gate and
+     * not a sentence. The record above says what was spent and this says whether the app has
+     * anything to spend today — asking the record the second question is what left a key nothing
+     * was tried on with no way to ever have anything tried on it. Absent and false are the same
+     * closed gate, so the fallback costs nothing here.
+     */
+    checkable: accountRow?.checkable ?? false,
+  });
 
   /** Adding is two writes when a token was typed: the credential, then the record pointing at it. */
   const add = async () => {
@@ -237,15 +494,41 @@ function RouteComponent() {
     }
   };
 
-  /* Nothing rather than a placeholder, so no sentence asserts anything while the fetch is open. */
-  if (plugins.isPending) {
+  /*
+   * Nothing rather than a placeholder, so no sentence asserts anything while the fetch is open —
+   * AND BOTH READS ARE WAITED FOR. `recorded`, `verified`, `verifiedAt`, `probe` and `checkable`
+   * all come off the connections read and this gated on `plugins` alone, so a connections read
+   * still in flight drew the brokered row with the whole of its state defaulted to "you have never
+   * connected this". The personal screen had the identical gap; see its own note.
+   */
+  if (plugins.isPending || connections.isPending) {
     return <PageShell title="Plugin">{null}</PageShell>;
+  }
+  /*
+   * Gated on the plugin list having ARRIVED, the guard the per-Bot grant screen already keeps
+   * (`plugins.data && !server`). `isPending` goes false on a failed fetch exactly as it does on a
+   * successful one, so `!(entry || server)` alone cannot tell "this deployment has no plugin by
+   * that name" apart from "the plugin list could not be read", and a request that never came back
+   * is no evidence for the first. Nothing on this page survives the failure: the title, the tools
+   * and the grants are all that one response.
+   */
+  if (!plugins.data) {
+    return (
+      <PageShell
+        backButton={{ label: "Plugins", linkProps: { to: "/admin/plugins" } }}
+        title="Plugins"
+      >
+        <p className="mt-12 text-destructive text-sm" role="alert">
+          Couldn't load plugins. Reload the page.
+        </p>
+      </PageShell>
+    );
   }
   if (!(entry || server)) {
     return (
       <PageShell
         backButton={{ label: "Plugins", linkProps: { to: "/admin/plugins" } }}
-        description="This deployment does not have a plugin by that name, and the catalogue does not offer one."
+        description="There is no plugin with that name, here or in the catalogue."
         title="Not a plugin"
       >
         <PageEmpty>Nothing to configure.</PageEmpty>
@@ -296,8 +579,8 @@ function RouteComponent() {
               <ItemTitle>Enable for this deployment</ItemTitle>
               <ItemDescription>
                 {server
-                  ? "Bots may be granted its tools. Switching this off removes it and every grant on its tools."
-                  : "No Bot can reach this vendor. Switch it on to configure it and grant its tools."}
+                  ? "Bots can be given its tools. Turning this off removes it and every Bot's access to its tools."
+                  : "No Bot can reach this vendor. Turn it on to set it up and give Bots its tools."}
               </ItemDescription>
             </ItemContent>
             <ItemActions>
@@ -312,17 +595,75 @@ function RouteComponent() {
               />
             </ItemActions>
           </Item>
+
+          {/*
+           * ONLY A BROKERED APP THAT HAS AN ACCOUNT TO MAKE. `NO_AUTH` is the Composio scheme with
+           * nothing to connect at all — see `brokeredAccountsListedOn` — so there is no personal/
+           * shared choice to offer for it, and a row here could only open a dialog that refuses.
+           */}
+          {server &&
+          brokeredProvenance(server.provenance) &&
+          server.authScheme !== "NO_AUTH" ? (
+            <>
+              <Separator />
+              <Item size="sm">
+                <ItemContent>
+                  <ItemTitle>Whose account</ItemTitle>
+                  <ItemDescription>
+                    {server.accountMode === "shared"
+                      ? "One shared account for everyone."
+                      : "Each person connects their own."}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <Button
+                    onClick={() =>
+                      setModeTarget(
+                        server.accountMode === "shared" ? "personal" : "shared",
+                      )
+                    }
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {server.accountMode === "shared"
+                      ? "Make personal"
+                      : "Make shared"}
+                  </Button>
+                </ItemActions>
+              </Item>
+            </>
+          ) : null}
         </PageRows>
       </PageSection>
+
+      {/*
+       * People asking for this app: to switch it on, give it to a Bot, or connect its shared
+       * account. Only when somebody is; the section draws nothing otherwise. Requests name who
+       * asked — connections still name nobody.
+       */}
+      <AccessRequestsSection app={key} />
+
+      <AccountModeDialog
+        names={botNames}
+        onOpenChange={(open) => !open && setModeTarget(null)}
+        open={modeTarget !== null}
+        serverId={key}
+        target={modeTarget ?? "shared"}
+        title={title}
+      />
 
       {server ? (
         <PageSection
           description={
             auth === "user-oauth"
-              ? "This vendor answers as whoever is asking. The deployment registers an OAuth client, and each person connects their own account, so a Bot only ever sees what that person can see."
+              ? "This vendor answers as whoever is asking. The deployment registers an OAuth client, and each person connects their own account. A Bot only sees what that person can see."
               : auth === "builtin"
-                ? "Built into this deployment. There is no vendor to reach and no credential to hold — a call runs as whoever asked."
-                : "What this deployment presents to the vendor. One credential, used for everybody."
+                ? "Built into this deployment. There is no vendor to reach and no credential to keep. A call runs as whoever asked."
+                : auth === "brokered"
+                  ? /* The row below says how, at length. This says whose account it is, which is the part that decides what an admin has to do here — which is nothing. */
+                    brokeredConnectionDescription(provider)
+                  : "What this deployment sends to the vendor. One credential for everybody."
           }
           title="Connection"
         >
@@ -342,6 +683,12 @@ function RouteComponent() {
            * step rather than as the answer. The row states that plainly instead of leaving the
            * card empty — and being first, it also gives the docsUrl row below something other than
            * the card's own top border to sit its leading separator against.
+           *
+           * The third is the brokered row, for the same reason as the second and one more: an
+           * administrator looking at a Connection card with only somebody's personal account on it
+           * will reasonably look for the deployment's half of the arrangement. There is one, it is
+           * just not theirs to type, and saying so is the only way this card is not read as
+           * half-configured.
            */}
           <PageRows>
             {auth === "builtin" ? (
@@ -353,13 +700,34 @@ function RouteComponent() {
                 <ItemContent>
                   <ItemTitle>Connection</ItemTitle>
                   <ItemDescription>
-                    Nothing to configure. These tools run inside this
-                    deployment, on the tables it already owns.
+                    Nothing to set up. These tools run inside this deployment,
+                    on its own data.
                   </ItemDescription>
                 </ItemContent>
                 <ItemActions>
                   <span className="text-muted-foreground text-xs">
                     Built in
+                  </span>
+                </ItemActions>
+              </Item>
+            ) : null}
+
+            {auth === "brokered" ? (
+              /*
+               * Nothing to click. The deployment's half of a brokered app is one key held once,
+               * for Composio rather than for this vendor, and it is set where every brokered app
+               * reads it from — not here, per app, by hand.
+               */
+              <Item size="sm">
+                <ItemContent>
+                  <ItemTitle>How this is reached</ItemTitle>
+                  <ItemDescription>
+                    {brokeredReach(provider).description}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <span className="text-muted-foreground text-xs">
+                    {brokeredReach(provider).badge}
                   </span>
                 </ItemActions>
               </Item>
@@ -375,12 +743,12 @@ function RouteComponent() {
                 <ItemContent>
                   <ItemTitle>Access token</ItemTitle>
                   <ItemDescription>
-                    Sent as a bearer token on every call to this vendor.
+                    Sent with every call to this vendor.
                   </ItemDescription>
                 </ItemContent>
                 <ItemActions>
                   <span className="text-muted-foreground text-xs">
-                    {server?.hasCredential ? "Held" : "Not set"}
+                    {server?.hasCredential ? "Saved" : "Not set"}
                   </span>
                   <IconChevronRight className="size-4 shrink-0 text-muted-foreground" />
                 </ItemActions>
@@ -419,8 +787,8 @@ function RouteComponent() {
                 <ItemContent>
                   <ItemTitle>OAuth client</ItemTitle>
                   <ItemDescription>
-                    Identifies this deployment to the vendor. It reaches
-                    nobody's documents on its own.
+                    Identifies this deployment to the vendor. On its own, it
+                    can't reach anyone's documents.
                   </ItemDescription>
                 </ItemContent>
                 <ItemActions>
@@ -448,50 +816,105 @@ function RouteComponent() {
              * that: a Connect button with no OAuth client behind it can only fail. A vendor with a
              * dynamic client is the exception — there is no client to register in advance, so
              * Connect is shown right away and is itself what creates one.
+             *
+             * A brokered app is shown right away too, and for the same reason: there is nothing
+             * for an administrator to configure first, so there is no state in which connecting
+             * could only fail. It is the one row on this card that is not optional in practice —
+             * a brokered app reaches nobody until somebody connects — but it is still personal,
+             * and still this person's account and nobody else's.
+             *
+             * The two are drawn by different things, which is the honest arrangement rather than
+             * one row branching on `auth` in five places. A brokered account is ended from here as
+             * well as begun, and says so; an OAuth one is withdrawn at the vendor and this page
+             * offers no button pretending otherwise.
              */}
+            {auth === "brokered" ? (
+              <>
+                <Separator />
+                {connectionsUnreadable ? (
+                  <ConnectionStateUnreadable />
+                ) : shared ? (
+                  <BrokeredAccountRow
+                    account={brokeredAccount}
+                    connectedDescription={`Connected${sharedConnection?.displayName ? ` as ${sharedConnection.displayName}` : ""}${sharedConnection?.connectedBy ? ` by ${sharedConnection.connectedBy}` : ""}. Every Bot with these tools acts as this account.`}
+                    disconnectedDescription={`No team account is connected. Bots with these tools are refused.${perActionGrants ? ` ${brokeredPerActionTrip(provider, "settings")}` : ""}`}
+                    heading="Team account"
+                    notice="Sign in as the team account, not your own."
+                    provider={provider}
+                    title={title}
+                  />
+                ) : (
+                  <BrokeredAccountRow
+                    account={brokeredAccount}
+                    /* Said beside the button rather than after it: disconnecting ends the account
+                       at Composio, so what it undoes is not the row here but the grant on this
+                       person's mailbox, and connecting again is a fresh consent. */
+                    connectedDescription={`Connected. A Bot with these tools uses your ${title} as you. ${brokeredDisconnectNote(provider)}`}
+                    disconnectedDescription={
+                      perActionGrants
+                        ? `${brokeredPerActionTrip(provider, "settings")} ${reassurance}`
+                        : `Connect your own account to try this connector. ${reassurance}`
+                    }
+                    /* The half of the line above that is true whichever way this app connects.
+                       An app whose key somebody types gets a different first sentence from the
+                       row — pressing Connect opens a form rather than leaving for a consent
+                       screen — and an administrator still has to be told they are not the step
+                       that finishes the connector. */
+                    disconnectedReassurance={reassurance}
+                    provider={provider}
+                    title={title}
+                  />
+                )}
+              </>
+            ) : null}
+
             {auth === "user-oauth" &&
             (server?.hasCredential || server?.dynamicClient) ? (
               <>
                 <Separator />
-                <Item size="sm">
-                  <ItemContent>
-                    <ItemTitle>Your account</ItemTitle>
-                    <ItemDescription>
-                      {youConnected
-                        ? `Connected, so a Bot granted these tools uses your ${title} as you. Everybody else connects their own.`
-                        : "Connect your own account to try this connector. Setup is complete without it, and it reaches your documents only."}
-                    </ItemDescription>
-                  </ItemContent>
-                  <ItemActions>
-                    {youConnected ? (
-                      <>
-                        {/* Decorative: the word beside it already says which. */}
-                        <span
-                          aria-hidden="true"
-                          className="size-1.5 rounded-full bg-emerald-500"
-                        />
-                        <span className="text-muted-foreground text-xs">
-                          Connected
-                        </span>
-                      </>
-                    ) : (
-                      /* The arrow says this leaves OpenBot for the vendor's consent page. It does. */
-                      <Button
-                        disabled={connectSelf.isPending}
-                        onClick={() => {
-                          setError(null);
-                          connectSelf.mutate(key);
-                        }}
-                        size="sm"
-                        type="button"
-                        variant="outline"
-                      >
-                        Connect
-                        <IconArrowUpRight />
-                      </Button>
-                    )}
-                  </ItemActions>
-                </Item>
+                {connectionsUnreadable ? (
+                  <ConnectionStateUnreadable />
+                ) : (
+                  <Item size="sm">
+                    <ItemContent>
+                      <ItemTitle>Your account</ItemTitle>
+                      <ItemDescription>
+                        {youConnected
+                          ? `Connected. A Bot with these tools uses your ${title} as you. Everybody else connects their own.`
+                          : "Connect your own account to try this connector. Setup is complete without it, and it reaches your documents only."}
+                      </ItemDescription>
+                    </ItemContent>
+                    <ItemActions>
+                      {youConnected ? (
+                        <>
+                          {/* Decorative: the word beside it already says which. */}
+                          <span
+                            aria-hidden="true"
+                            className="size-1.5 rounded-full bg-emerald-500"
+                          />
+                          <span className="text-muted-foreground text-xs">
+                            Connected
+                          </span>
+                        </>
+                      ) : (
+                        /* The arrow says this leaves OpenBot for the vendor's consent page. It does. */
+                        <Button
+                          disabled={connectSelf.isPending}
+                          onClick={() => {
+                            setError(null);
+                            connectSelf.mutate(key);
+                          }}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          Connect
+                          <IconArrowUpRight />
+                        </Button>
+                      )}
+                    </ItemActions>
+                  </Item>
+                )}
               </>
             ) : null}
 
@@ -510,8 +933,8 @@ function RouteComponent() {
                   <ItemContent>
                     <ItemTitle>Instance host</ItemTitle>
                     <ItemDescription>
-                      This vendor gives every customer their own hostname,
-                      checked against its pattern before anything is stored.
+                      This vendor gives every customer their own hostname. It is
+                      checked against the vendor's pattern before it is saved.
                     </ItemDescription>
                   </ItemContent>
                   <ItemActions>
@@ -557,20 +980,20 @@ function RouteComponent() {
             <div className="mt-3 p-3">
               {server?.dynamicClient ? (
                 <p className="text-muted-foreground text-sm">
-                  The deployment registers its redirect URI itself, so there is
+                  The deployment registers its redirect URI itself. There is
                   nothing to add at the vendor.
                 </p>
               ) : (
                 <p className="text-muted-foreground text-sm">
                   Add this to the client's authorised redirect URIs at the
-                  vendor, exactly as written. A single wrong character fails
-                  there, with a message that does not mention OpenBot.
+                  vendor, exactly as written. One wrong character fails there,
+                  with an error that doesn't mention OpenBot.
                 </p>
               )}
               {!plugins.data?.redirectUri ? (
                 <p className="mt-3 text-destructive text-sm" role="alert">
-                  This deployment has no public URL, so nobody can complete a
-                  consent flow. Set OPENBOT_PUBLIC_URL.
+                  This deployment has no public URL, so nobody can finish
+                  connecting. Set OPENBOT_PUBLIC_URL.
                 </p>
               ) : server?.dynamicClient ? null : (
                 /* Selectable and monospaced: it is copied by hand into somebody else's console. */
@@ -622,13 +1045,14 @@ function RouteComponent() {
               ) : null}
             </div>
           }
-          description="A Bot is told about a tool only when it holds it. Every call is decided again when it happens, so removing a grant takes effect on the next one."
+          description="A Bot only sees the tools it has been given. Each call is checked when it happens, so removing access applies from the next call."
           title="Tools"
         >
+          <SkippedToolsNotice names={server.skippedTools ?? []} />
           {server.tools.length === 0 ? (
             <PageEmpty>
               {server.lastError ??
-                "No tools listed. Refresh to ask the vendor again."}
+                "No tools listed. Refresh tools to check again."}
             </PageEmpty>
           ) : (
             <PageRows>
@@ -683,6 +1107,65 @@ function RouteComponent() {
               ))}
             </PageRows>
           )}
+
+          {/*
+           * The same grants, from the Bot's end.
+           *
+           * In this section rather than one of its own, because it is not a second subject: the
+           * list above is one action and every Bot, and these rows are one Bot and every action.
+           * Which way round somebody wants it depends on what they came here to do — write a rule
+           * about an action, or set a Bot up — and an app of a hundred and sixty-seven actions is
+           * only approachable from this end.
+           */}
+          {server.tools.length > 0 && bots.length > 0 ? (
+            <>
+              <p className="mt-8 font-medium text-sm">By Bot</p>
+              <PageRows>
+                {bots.map((bot, index) => (
+                  <React.Fragment key={bot.id}>
+                    {/* A real link with no children: children passed to `render` replace the row's own. */}
+                    <Item
+                      render={
+                        <Link
+                          params={{ agentId: bot.id, key }}
+                          to="/admin/plugins/$key/bots/$agentId"
+                        />
+                      }
+                      size="sm"
+                    >
+                      <ItemContent>
+                        <ItemTitle>{bot.name}</ItemTitle>
+                        <ItemDescription>
+                          {bot.hidden
+                            ? "Hidden from your roster. Turn this app's actions on or off one at a time."
+                            : "Turn this app's actions on or off one at a time."}
+                        </ItemDescription>
+                      </ItemContent>
+                      <ItemActions>
+                        {/*
+                         * Only on a Shared app: a Personal one has no one account behind it for a
+                         * Bot to stand with, so there is nothing here to approve.
+                         */}
+                        {shared ? (
+                          <BotApprovalText botId={bot.id} serverId={key} />
+                        ) : null}
+                        <span className="text-muted-foreground text-xs">
+                          {heldSummary(
+                            server.tools.filter((tool) =>
+                              tool.grantedTo.includes(bot.id),
+                            ).length,
+                            server.tools.length,
+                          )}
+                        </span>
+                        <IconChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                      </ItemActions>
+                    </Item>
+                    {index !== bots.length - 1 && <Separator />}
+                  </React.Fragment>
+                ))}
+              </PageRows>
+            </>
+          ) : null}
         </PageSection>
       ) : null}
 
@@ -696,8 +1179,8 @@ function RouteComponent() {
        */}
       {server && server.withdrawn.length > 0 ? (
         <PageSection
-          description="This vendor no longer lists these, so no Bot is told about them and no model can call one. The grant is still recorded, and the tool would be offered again if the vendor started listing it. Revoke from the Bot's own page if that is not what you want."
-          title="Held but not offered"
+          description="This vendor no longer lists these. No Bot sees them, and none can call them. The access is still saved, and comes back if the vendor lists the tool again. To remove it, use the Bot's own page."
+          title="Given but no longer listed"
         >
           <PageRows>
             {server.withdrawn.map((held, index) => (
@@ -741,10 +1224,10 @@ function RouteComponent() {
             </DialogTitle>
             <DialogDescription>
               {dialog === "client"
-                ? "From the vendor's console. The secret is stored in this deployment's vault and never read back."
+                ? "From the vendor's console. The secret is saved in this deployment's vault and never shown again."
                 : dialog === "instance"
-                  ? "Your own hostname with this vendor. It is checked against their pattern before anything is stored."
-                  : "Stored in this deployment's vault and never read back."}
+                  ? "Your own hostname with this vendor. It is checked against the vendor's pattern before it is saved."
+                  : "Saved in this deployment's vault and never shown again."}
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="mt-4">
@@ -841,8 +1324,8 @@ function RouteComponent() {
             <DialogHeader>
               <DialogTitle>Grant tools</DialogTitle>
               <DialogDescription>
-                Each grant is its own entry on the audit trail, and a granted
-                write is still checked against the boundaries on every call.
+                Each grant is its own row in Audit. Tools that change things are
+                still checked against the boundaries on every call.
               </DialogDescription>
             </DialogHeader>
             <DialogBody className="mt-4 space-y-5">
@@ -992,13 +1475,13 @@ function RouteComponent() {
                 <p className="flex-1 text-muted-foreground text-xs">
                   {`Grant ${selectedRefs.size} ${
                     selectedRefs.size === 1 ? "tool" : "tools"
-                  }${
+                  } to ${chosenNames.join(", ")}.${
                     chosenWrites > 0
-                      ? `, ${chosenWrites} of which ${
+                      ? ` ${chosenWrites} ${
                           chosenWrites === 1 ? "changes" : "change"
-                        } things,`
+                        } things.`
                       : ""
-                  } to ${chosenNames.join(", ")}.`}
+                  }`}
                 </p>
               ) : null}
               <Button onClick={() => setDialog(null)} size="sm" variant="ghost">

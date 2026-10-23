@@ -22,6 +22,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { currentUserQueryOptions } from "@/lib/auth/queries";
+import { terminateMemberComputersMutationOptions } from "@/lib/enterprise/mutations";
 import {
   setPersonAccessMutationOptions,
   setPersonRoleMutationOptions,
@@ -54,9 +55,10 @@ function describe(person: Person): string {
     ? `last signed in ${new Date(person.lastSignedInAt).toLocaleDateString()}`
     : "never signed in";
 
-  if (person.revoked) return `Access removed · ${providers || "no provider"}`;
+  if (person.revoked)
+    return `Access removed · ${providers || "no provider"} · ${when}`;
   if (person.configuredAdmin) {
-    return `Administrator by configuration · ${when}`;
+    return `Admin by configuration · ${when}`;
   }
   return `${providers || "no provider"} · ${when}`;
 }
@@ -78,23 +80,35 @@ function PeoplePage() {
   const currentUser = useQuery(currentUserQueryOptions());
   const setRole = useMutation(setPersonRoleMutationOptions(queryClient));
   const setAccess = useMutation(setPersonAccessMutationOptions(queryClient));
+  // Offboarding: stops this person's Bots' computers, keeping their disks. Access is unchanged.
+  const terminate = useMutation(terminateMemberComputersMutationOptions());
 
   // The server refuses these too. Disabling them here is so the screen does not offer something it
   // knows will be refused, not so the rule is enforced in the browser.
-  const failure = setRole.error ?? setAccess.error;
+  const failure = setRole.error ?? setAccess.error ?? terminate.error;
 
   return (
     <PageShell
-      description="Everybody who has signed in. Administrators reach these screens; everybody else talks to Bots."
+      description="Everybody who has signed in. Admins can open these screens. Everybody else talks to Bots."
       title="People"
     >
       <PageSection
-        description="An address named in INITIAL_ADMIN_EMAILS is an administrator whatever this screen says, so it cannot be changed here."
+        description="Addresses in INITIAL_ADMIN_EMAILS are always admins. You can't change them here."
         title="Who is here"
       >
         {failure ? (
           <p className="mt-4 text-destructive text-sm" role="alert">
             {failure.message}
+          </p>
+        ) : null}
+        {terminate.data ? (
+          <p className="mt-4 text-muted-foreground text-sm" role="status">
+            Stopped {terminate.data.stopped.length}{" "}
+            {terminate.data.stopped.length === 1 ? "computer" : "computers"}
+            {terminate.data.failed.length > 0
+              ? `. ${terminate.data.failed.length} couldn't be stopped`
+              : ""}
+            . Their disks are kept.
           </p>
         ) : null}
         {/*
@@ -111,13 +125,13 @@ function PeoplePage() {
 
         {people.isPending ? null : people.error ? (
           <p className="mt-4 text-destructive text-sm" role="alert">
-            Could not load people.
+            Couldn't load people. Reload the page.
           </p>
         ) : rows.length === 0 ? (
           <PageEmpty>
             {query
-              ? `Nobody here matches "${query}".`
-              : "Nobody has signed in yet. People appear here once they do."}
+              ? `Nobody matches "${query}".`
+              : "Nobody has signed in yet. People show here once they do."}
           </PageEmpty>
         ) : (
           <PageRows>
@@ -151,6 +165,14 @@ function PeoplePage() {
                        * one, and these two do very different things.
                        */}
                       <Button
+                        disabled={terminate.isPending}
+                        onClick={() => terminate.mutate(person.id)}
+                        size="sm"
+                        variant="outline"
+                      >
+                        Stop computers
+                      </Button>
+                      <Button
                         disabled={busy || isSelf || person.configuredAdmin}
                         onClick={() =>
                           setAccess.mutate({
@@ -164,7 +186,7 @@ function PeoplePage() {
                         {person.revoked ? "Restore" : "Remove"}
                       </Button>
                       <Switch
-                        aria-label={`Administrator: ${person.email}`}
+                        aria-label={`Admin: ${person.email}`}
                         checked={person.role === "admin"}
                         disabled={busy || person.configuredAdmin || isSelf}
                         onCheckedChange={(checked) =>

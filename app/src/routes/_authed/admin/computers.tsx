@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import {
@@ -26,9 +26,17 @@ import {
 } from "@/components/ui/item";
 import { Separator } from "@/components/ui/separator";
 import { useBotNames } from "@/lib/agents/bot-names";
+import { agentListQueryOptions } from "@/lib/agents/queries";
 import { setComputerStateMutationOptions } from "@/lib/computers/mutations";
+import {
+  hostAccessQueryOptions,
+  requestHostFolderGrantMutationOptions,
+  revokeHostFolderGrantMutationOptions,
+  stopHostAccessMutationOptions,
+  type HostFolderGrant,
+  type HostAccessPendingOperation,
+} from "@/lib/computers/host-access";
 import { computerFleetQueryOptions } from "@/lib/computers/queries";
-import { queryClient } from "@/query-client";
 
 export const Route = createFileRoute("/_authed/admin/computers")({
   component: ComputersPage,
@@ -39,32 +47,54 @@ function ComputersPage() {
   const [busy, setBusy] = useState<string | null>(null);
   /** Reset deletes the browser profile, so it requires confirmation. */
   const [confirming, setConfirming] = useState<string | null>(null);
+  /** Updating restarts a running computer mid-task, so it is confirmed too. */
+  const [confirmingUpdate, setConfirmingUpdate] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const nameFor = useBotNames();
 
   const fleet = useQuery(computerFleetQueryOptions());
+  const hostAccess = useQuery(hostAccessQueryOptions());
+  const agents = useQuery(agentListQueryOptions());
   const setState = useMutation(setComputerStateMutationOptions(queryClient));
+  const requestGrant = useMutation(
+    requestHostFolderGrantMutationOptions(queryClient),
+  );
+  const revokeGrant = useMutation(
+    revokeHostFolderGrantMutationOptions(queryClient),
+  );
+  const stopHostAccess = useMutation(
+    stopHostAccessMutationOptions(queryClient),
+  );
 
   const computers = fleet.data?.computers ?? null;
   const isolation = fleet.data?.isolation ?? null;
   /*
-   * One line for either failure. A list that could not be read and an action that was refused are
-   * both "this did not work", and the page has one place to say so.
+   * A list that could not be read. A refused stop, reset or update is said beside the buttons
+   * instead, because the top of this page is a long scroll away from them.
    */
   const problem = fleet.error
-    ? "The computers could not be listed."
-    : setState.error
-      ? setState.error.message
-      : null;
+    ? "Couldn't load the computers. Reload the page."
+    : null;
+  const hostProblem = hostAccess.error
+    ? hostAccess.error.message
+    : requestGrant.error
+      ? requestGrant.error.message
+      : revokeGrant.error
+        ? revokeGrant.error.message
+        : stopHostAccess.error
+          ? stopHostAccess.error.message
+          : null;
 
-  const run = (botId: string, action: "stop" | "reset") => {
+  const run = (botId: string, action: "stop" | "reset" | "update") => {
     setBusy(botId);
     setConfirming(null);
+    setConfirmingUpdate(null);
     setState.mutate({ action, botId }, { onSettled: () => setBusy(null) });
   };
 
   return (
     <PageShell
-      description="Each Bot's browser and the profile it keeps. A profile is what makes a Bot still signed in tomorrow, and resetting one signs it out of everything."
+      description="Each Bot's browser and the profile it keeps. The profile keeps a Bot signed in. Resetting it signs the Bot out of everything."
       title="Computers"
     >
       {problem ? (
@@ -81,23 +111,55 @@ function ComputersPage() {
           <span className="font-medium">
             Every Bot is sharing one computer.
           </span>{" "}
-          They share its logins, its files and its session, so a Bot can reach
-          what another signed into. Set <code>COMPUTER_SUPERVISOR_URL</code> to
-          give each Bot its own.
+          They share its logins, files and session. A Bot can reach what another
+          signed into. Set <code>COMPUTER_SUPERVISOR_URL</code> to give each Bot
+          its own.
         </p>
       ) : isolation === "per-bot" ? (
         <p className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm">
-          Each Bot has a computer of its own: its own container, its own files
-          and its own browser profile.
+          Each Bot has its own computer, with its own container, files and
+          browser profile.
         </p>
       ) : null}
 
+      <HostFoldersSection
+        connected={hostAccess.data?.connected ?? false}
+        grants={hostAccess.data?.grants ?? []}
+        botIds={(agents.data ?? []).map((agent) => agent.id)}
+        loading={hostAccess.isPending || agents.isPending}
+        nameFor={nameFor}
+        onGrant={(botId) => requestGrant.mutate({ botId })}
+        onRevoke={(grantId) => revokeGrant.mutate({ grantId })}
+        onStop={() => stopHostAccess.mutate()}
+        pending={hostAccess.data?.pending ?? []}
+        problem={hostProblem}
+        requestingBotId={
+          requestGrant.isPending
+            ? (requestGrant.variables?.botId ?? null)
+            : null
+        }
+        revokingGrantId={
+          revokeGrant.isPending
+            ? (revokeGrant.variables?.grantId ?? null)
+            : null
+        }
+        stopping={stopHostAccess.isPending}
+      />
+
       <PageSection title="Computers in this deployment">
+        {setState.error ? (
+          <p
+            className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm"
+            role="alert"
+          >
+            {setState.error.message}
+          </p>
+        ) : null}
         {computers === null && problem ? (
-          <PageEmpty>The list could not be loaded.</PageEmpty>
+          <PageEmpty>Couldn't load the list.</PageEmpty>
         ) : computers === null ? null : computers.length === 0 ? (
           <PageEmpty>
-            No computers yet. One appears the first time a Bot opens a page.
+            No computers yet. One shows up the first time a Bot opens a page.
           </PageEmpty>
         ) : (
           <PageRows>
@@ -118,9 +180,20 @@ function ComputersPage() {
                         : computer.egress === null
                           ? "Leaves directly"
                           : `Leaves through ${computer.egress}`}
+                      {computer.updateAvailable ? " · Update available" : ""}
                     </ItemDescription>
                   </ItemContent>
                   <ItemActions>
+                    {computer.updateAvailable ? (
+                      <Button
+                        disabled={busy === computer.botId}
+                        onClick={() => setConfirmingUpdate(computer.botId)}
+                        size="sm"
+                        variant="outline"
+                      >
+                        Update computer
+                      </Button>
+                    ) : null}
                     <Button
                       disabled={busy === computer.botId || !computer.running}
                       onClick={() => void run(computer.botId, "stop")}
@@ -164,8 +237,8 @@ function ComputersPage() {
               Reset {confirming ? nameFor(confirming) : ""}'s computer?
             </DialogTitle>
             <DialogDescription>
-              Its profile is deleted, so the Bot is signed out of every service
-              it had logged into and starts clean. This cannot be undone.
+              Its profile is deleted. The Bot is signed out of every service and
+              starts clean. You can't undo this.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -190,11 +263,52 @@ function ComputersPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        onOpenChange={(open) => {
+          if (!open) setConfirmingUpdate(null);
+        }}
+        open={confirmingUpdate !== null}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Update {confirmingUpdate ? nameFor(confirmingUpdate) : ""}'s
+              computer?
+            </DialogTitle>
+            <DialogDescription>
+              It moves to the computer image this deployment now runs. Its files
+              and sign-ins are kept. If it's running, it restarts and stops what
+              it's doing.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              onClick={() => setConfirmingUpdate(null)}
+              size="sm"
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={busy === confirmingUpdate}
+              onClick={() => {
+                if (confirmingUpdate) void run(confirmingUpdate, "update");
+              }}
+              size="sm"
+            >
+              {busy === confirmingUpdate ? "Updating…" : "Update it"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <p className="mt-4 text-muted-foreground text-sm">
-        <strong>Stop</strong> closes the browser and keeps its logins: the next
-        thing the Bot does starts it again where it left off.{" "}
-        <strong>Reset</strong> deletes the profile, so the Bot is signed out of
-        everything and starts clean. Both are recorded in{" "}
+        <strong>Stop</strong> closes the browser and keeps its logins. It starts
+        again the next time the Bot needs it. <strong>Reset</strong> deletes the
+        profile and signs the Bot out of everything.{" "}
+        <strong>Update computer</strong> shows when a computer runs an older
+        image. It moves the computer to the new one and keeps its files and
+        sign-ins. All three show in{" "}
         <Link className="underline" to="/admin/audit">
           Audit
         </Link>
@@ -202,4 +316,219 @@ function ComputersPage() {
       </p>
     </PageShell>
   );
+}
+
+type HostFoldersSectionProps = {
+  botIds: string[];
+  connected: boolean;
+  grants: HostFolderGrant[];
+  loading: boolean;
+  nameFor: (botId: string) => string;
+  onGrant: (botId: string) => void;
+  onRevoke: (grantId: string) => void;
+  onStop: () => void;
+  pending: HostAccessPendingOperation[];
+  problem: string | null;
+  requestingBotId: string | null;
+  revokingGrantId: string | null;
+  stopping: boolean;
+};
+
+function HostFoldersSection({
+  botIds: knownBotIds,
+  connected,
+  grants,
+  loading,
+  nameFor,
+  onGrant,
+  onRevoke,
+  onStop,
+  pending,
+  problem,
+  requestingBotId,
+  revokingGrantId,
+  stopping,
+}: HostFoldersSectionProps) {
+  const botIds = Array.from(
+    new Set([
+      ...knownBotIds,
+      ...grants.map((grant) => grant.botId),
+      ...pending.map((one) => one.botId),
+    ]),
+  ).sort((left, right) => nameFor(left).localeCompare(nameFor(right)));
+
+  return (
+    <PageSection
+      description="Choose folders a Bot can read on this computer. The desktop app asks before each edit or command. Access ends when you stop OpenBot."
+      title="Folders on this computer"
+    >
+      {problem ? (
+        <p
+          className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm"
+          role="alert"
+        >
+          {problem}
+        </p>
+      ) : null}
+
+      {!connected && !loading ? (
+        <p className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+          The desktop app is offline. Open it to approve folders or run
+          commands.
+        </p>
+      ) : null}
+
+      {loading ? null : botIds.length === 0 ? (
+        <PageEmpty>No Bots yet. Create one, then choose its folders.</PageEmpty>
+      ) : (
+        <PageRows>
+          {botIds.map((botId, index) => (
+            <StaggerItem index={index} key={botId}>
+              <Item size="sm">
+                <ItemContent>
+                  <ItemTitle title={botId}>{nameFor(botId)}</ItemTitle>
+                  <ItemDescription>
+                    {summaryFor(botId, grants, pending)}
+                  </ItemDescription>
+                  <FolderGrantList
+                    botId={botId}
+                    grants={grants}
+                    onRevoke={onRevoke}
+                    pending={pending}
+                    revokingGrantId={revokingGrantId}
+                  />
+                </ItemContent>
+                <ItemActions>
+                  <Button
+                    disabled={!connected || requestingBotId === botId}
+                    onClick={() => onGrant(botId)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    {requestingBotId === botId ? "Waiting…" : "Choose folder"}
+                  </Button>
+                </ItemActions>
+              </Item>
+              {index !== botIds.length - 1 && <Separator />}
+            </StaggerItem>
+          ))}
+        </PageRows>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-muted-foreground text-sm">
+        <p>
+          Folders are read-only. When a Bot needs to write, the desktop app asks
+          you first.
+        </p>
+        <div className="flex items-center gap-3">
+          <Button
+            disabled={!connected || stopping}
+            onClick={onStop}
+            size="sm"
+            variant="outline"
+          >
+            {stopping ? "Stopping…" : "Stop folder access"}
+          </Button>
+          <Link className="underline" to="/admin/audit">
+            View audit
+          </Link>
+        </div>
+      </div>
+    </PageSection>
+  );
+}
+
+function FolderGrantList({
+  botId,
+  grants,
+  onRevoke,
+  pending,
+  revokingGrantId,
+}: {
+  botId: string;
+  grants: HostFolderGrant[];
+  onRevoke: (grantId: string) => void;
+  pending: HostAccessPendingOperation[];
+  revokingGrantId: string | null;
+}) {
+  const botGrants = grants.filter(
+    (grant) => grant.botId === botId && !grant.revoked,
+  );
+  const botPending = pending.filter((request) => request.botId === botId);
+
+  if (botGrants.length === 0 && botPending.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      {botGrants.map((grant) => (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2"
+          key={grant.id}
+        >
+          <div className="min-w-0">
+            <p className="truncate font-medium text-sm">{grant.displayName}</p>
+            <p className="text-muted-foreground text-xs">
+              {ownerLabel(grant)} · Read-only
+            </p>
+          </div>
+          <Button
+            disabled={revokingGrantId === grant.id}
+            onClick={() => onRevoke(grant.id)}
+            size="sm"
+            variant="ghost"
+          >
+            {revokingGrantId === grant.id ? "Revoking…" : "Revoke"}
+          </Button>
+        </div>
+      ))}
+      {botPending.map((request) => (
+        <div
+          className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+          key={request.operationId}
+        >
+          {pendingLabel(request)} from {ownerLabel(request)}
+          {request.displayName ? ` for ${request.displayName}` : ""}.
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function summaryFor(
+  botId: string,
+  grants: HostFolderGrant[],
+  pending: HostAccessPendingOperation[],
+) {
+  const active = grants.filter(
+    (grant) => grant.botId === botId && !grant.revoked,
+  ).length;
+  const waiting = pending.filter((request) => request.botId === botId).length;
+  const parts = [];
+  if (active > 0)
+    parts.push(`${active} read-only ${active === 1 ? "folder" : "folders"}`);
+  if (waiting > 0)
+    parts.push(`${waiting} pending ${waiting === 1 ? "request" : "requests"}`);
+  return parts.length > 0 ? parts.join(" · ") : "No folders approved.";
+}
+
+function ownerLabel(grant: { ownerName?: string; ownerEmail?: string }) {
+  return grant.ownerName ?? grant.ownerEmail ?? "the desktop owner";
+}
+
+function pendingLabel(request: HostAccessPendingOperation) {
+  switch (request.kind) {
+    case "write_file":
+      return "File change waiting for approval or to finish";
+    case "run_command":
+      return "Command waiting for approval or to finish";
+    case "list_files":
+      return "Listing files";
+    case "read_file":
+      return "Reading a file";
+    case "cancel":
+    case "stop":
+      return "Stopping folder work";
+    default:
+      return "Folder access waiting for approval";
+  }
 }

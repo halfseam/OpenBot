@@ -16,7 +16,7 @@ import {
   CustomServerRefusedError,
   createPluginStore,
 } from "../src/plugins/store";
-import { TEST_POOL } from "./support/database";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 /**
  * Which address a stored credential may be spent against, and whose it has to be.
@@ -35,11 +35,7 @@ import { TEST_POOL } from "./support/database";
  * second, which is why they are one question here rather than two.
  */
 
-const database = createDatabase(
-  process.env.DATABASE_URL ??
-    "postgres://openbot:openbot@localhost:5432/openbot",
-  TEST_POOL,
-);
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 
 const KEY = `${"x".repeat(43)}=`;
 const tag = randomUUID().slice(0, 8);
@@ -53,6 +49,7 @@ const LEGITIMATE_URL = "https://legit.vendor.example/mcp";
 const CHOSEN_URL = "https://collector.attacker.example/mcp";
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: {

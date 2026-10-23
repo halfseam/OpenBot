@@ -21,17 +21,13 @@
  * posting three times for one bad night — or retries for ever, because a rule counting attempts
  * within a firing never sees the routine that fails cleanly, once, every single night.
  */
+
+import { BOT_PAUSED_REASON, isBotPaused } from "../agents/lifecycle";
 import type { AgentActor } from "../agents/profile-types";
 import type { ChannelStore } from "../channels/routes";
+import { HeadlessToolSuspension } from "@openbot/toolkit/headless-tools";
+import type { TurnRunner } from "@openbot/toolkit/run-turn";
 import type { RoutineStore } from "./store";
-
-/** Everything a headless turn needs, injectable so tests never dial a model. */
-export type TurnRunner = (input: {
-  ownerUserId: string; // the actor the run asserts — grants and connections resolve to them
-  agentId: string;
-  threadId: string; // the owner's thread for the routine's channel
-  instruction: string; // the user message of this turn
-}) => Promise<{ replyText: string }>;
 
 export type RoutineRunner = { run(routineRunId: string): Promise<void> };
 
@@ -77,6 +73,19 @@ export function createRoutineRunner(options: {
      * say to anybody. The firing is dropped on the floor deliberately.
      */
     if (!context) return;
+    /*
+     * PAUSED NEVER RUNS, checked here at the moment of running rather than only when the firing was
+     * offered: a person who switched the routine off after the dispatch, or a Run now that raced a
+     * pause, has said what they want. Skipped, so the fatigue rule does not count it.
+     */
+    if (context.enabled === false) {
+      await routineStore.finishRun(
+        routineRunId,
+        "skipped",
+        "the routine is paused",
+      );
+      return;
+    }
 
     const { routineId, ownerUserId, agentId, channelId, instruction } = context;
     // Everything below is done AS the owner: their channel, their thread, their grants.
@@ -126,15 +135,31 @@ export function createRoutineRunner(options: {
       return;
     }
 
+    // A paused Bot's firing is skipped, not failed, so a long pause never trips the fatigue rule.
+    if (await isBotPaused(ownerUserId, agentId)) {
+      await routineStore.finishRun(routineRunId, "skipped", BOT_PAUSED_REASON);
+      return;
+    }
     let replyText: string;
     try {
       ({ replyText } = await runTurn({
         ownerUserId,
+        routineId,
         agentId,
         threadId: channel.threadId,
         instruction,
       }));
     } catch (error) {
+      if (error instanceof HeadlessToolSuspension) {
+        await routineStore.finishRun(
+          routineRunId,
+          "waiting",
+          error.message,
+          error.waiting,
+        );
+        await say(error.message);
+        return;
+      }
       const reason = reasonOf(error);
       await routineStore.finishRun(routineRunId, "failed", reason);
 

@@ -16,6 +16,24 @@
  *
  * This compatibility shim is narrow enough to delete when the SDK ships an ESM-safe require or Bun
  * handles it.
+ *
+ * `@copilotkit/runtime` also eagerly imports the Vertex provider, which pulls `gaxios` through a
+ * Bun global cache path during tests. These tests do not exercise Vertex, so the provider is stubbed
+ * at the same preload boundary and fails loudly if a server test tries to use it.
+ *
+ * And `./test-network-guard` closes the process's egress, for the same reason this file exists at
+ * all: it has to run before any test file is imported, because a vendor client binds its transport
+ * when it is constructed and a stub installed afterwards is one the client never sees.
  */
 
+import { mock } from "bun:test";
 import "eventsource";
+import "./test-network-guard";
+
+mock.module("@ai-sdk/google-vertex", () => ({
+  createVertex: () => () => {
+    throw new Error(
+      "@ai-sdk/google-vertex is not available in Bun server tests",
+    );
+  },
+}));

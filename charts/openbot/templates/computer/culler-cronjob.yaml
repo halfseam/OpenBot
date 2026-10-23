@@ -16,7 +16,8 @@ one workload rather than across several.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "openbot.componentName" (dict "root" . "component" $component) }}
+  {{- /* Fifty-two characters, not sixty-three; see `openbot.cronJobName`. */}}
+  name: {{ include "openbot.cronJobName" (dict "root" . "component" $component) }}
   labels:
 {{ include "openbot.componentLabels" (dict "root" . "component" $component) | indent 4 }}
 spec:
@@ -89,6 +90,9 @@ spec:
                 - name: sandbox-template
                   mountPath: /etc/openbot
                   readOnly: true
+                {{- with (include "openbot.extraVolumeMounts" . | trim) }}
+                {{- . | nindent 16 }}
+                {{- end }}
               resources:
                 requests:
                   cpu: 50m
@@ -99,4 +103,7 @@ spec:
             - name: sandbox-template
               configMap:
                 name: {{ include "openbot.componentName" (dict "root" . "component" "computer-template") }}
+            {{- with (include "openbot.extraVolumes" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
 {{- end }}

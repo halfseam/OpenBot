@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AgentProfile } from "./queries";
 
 /**
  * Browser-side coworker form contract. Limits match the server parser so validation errors can be
@@ -18,8 +19,8 @@ export const agentFormSchema = z.object({
   roleDescription: z
     .string()
     .trim()
-    .min(1, "Role description is required.")
-    .max(1000, "Role description must be 1000 characters or fewer."),
+    .min(1, "A description of what it does is required.")
+    .max(1000, "What it does must be 1000 characters or fewer."),
   visibility: z.enum(["public", "private"]),
   /**
    * The AG-UI endpoint this coworker runs on. Empty means the Bot in the box.
@@ -63,4 +64,28 @@ export function agentInputFrom(values: AgentFormValues) {
       ? { auth: { header: "Authorization", value: values.authValue.trim() } }
       : {}),
   };
+}
+
+/**
+ * The full update body for changing one or two fields of a Bot.
+ *
+ * The update endpoint takes the whole profile, so unchanged fields ride along as stored. Not a
+ * built-in Bot's endpoint: that is the managed Bot's own address, which nobody typed, and the route
+ * checks any endpoint it is sent as one somebody did — on a deployment whose Bot is on localhost it
+ * refused every edit. Empty leaves the stored one where it is, and the empty key keeps the current
+ * one.
+ */
+export function profileUpdateInput(
+  profile: AgentProfile,
+  patch: Partial<AgentFormValues>,
+) {
+  return agentInputFrom({
+    name: profile.name,
+    title: profile.title,
+    roleDescription: profile.roleDescription,
+    visibility: profile.visibility,
+    endpoint: profile.builtIn ? "" : (profile.endpoint ?? ""),
+    authValue: "",
+    ...patch,
+  });
 }

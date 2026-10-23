@@ -1,7 +1,9 @@
 import {
   IconArrowLeft,
+  IconBell,
+  IconChecks,
+  IconKey,
   IconLayoutGrid,
-  IconPlug,
   IconSettings,
 } from "@tabler/icons-react";
 import { Link, type LinkOptions } from "@tanstack/react-router";
@@ -39,13 +41,22 @@ const ITEMS: {
     linkOptions: { to: "/settings" },
   },
   {
-    /*
-     * The same subject as Admin's Plugins, from the other side: there an administrator decides what
-     * this deployment may reach at all, here you decide what it may reach as you.
-     */
-    title: "Contas Conectadas",
-    icon: IconPlug,
-    linkOptions: { to: "/settings/connected-accounts" },
+    /* Where updates go for every Bot at once; how much each Bot sends is on that Bot's page. */
+    title: "Notifications",
+    icon: IconBell,
+    linkOptions: { to: "/settings/notifications" },
+  },
+  {
+    /* Whether Bots ask first, and rules for every Bot. Team settings are an administrator's. */
+    title: "Approvals",
+    icon: IconChecks,
+    linkOptions: { to: "/settings/approvals" },
+  },
+  {
+    /* Logins saved from a Bot's private sign-in form. */
+    title: "Passwords",
+    icon: IconKey,
+    linkOptions: { to: "/settings/passwords" },
   },
   {
     /* The same mark Admin gives UI Components. It is the same subject seen from the other side. */

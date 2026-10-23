@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ComponentPreview } from "@/components/component-preview";
+import { AdminComponentPreview } from "@/components/component-preview";
 import { PageShell } from "@/components/layout/page-shell";
 import { SettingsItemBackground } from "@/components/settings/background";
 import {
@@ -26,8 +26,8 @@ function RouteComponent() {
 
   return (
     <PageShell
-      description="What each Bot may answer with. Every published component is available to every Bot; switch one off here and that Bot is never told about it. Each change and each refusal is a row in Audit."
-      title="UI Components"
+      description="What each Bot can answer with. Every published component is on for every Bot. Turn one off and that Bot never sees it. Changes and refusals show in Audit."
+      title="UI components"
     >
       {/*
        * Pending, error, empty, rows — in that order. Pending draws nothing rather than a
@@ -36,19 +36,19 @@ function RouteComponent() {
        */}
       {components.isPending ? null : components.error ? (
         <p className="mt-12 text-destructive text-sm" role="alert">
-          Could not load components.
+          Couldn't load components. Reload the page.
         </p>
       ) : components.data?.length === 0 ? (
         <Empty className="mt-12 min-h-[30dvh] border border-dashed">
           <EmptyHeader>
             <EmptyTitle>No components yet</EmptyTitle>
             <EmptyDescription className="text-pretty">
-              Components that your Agents can use will be shown here.
+              Components your Bots can use will show here.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
-        <div className="mx-auto mt-12 grid w-full max-w-2xl grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="mt-12 grid w-full grid-cols-1 gap-4 md:grid-cols-2">
           {components.data?.map((component) => (
             /*
              * A real link rather than a button, so a component can be opened in a new tab the way
@@ -90,7 +90,10 @@ function RouteComponent() {
                   <SettingsItemBackground className="h-full w-full rounded-md" />
                 </div>
                 <div className="absolute top-0 left-0 z-10 h-full w-full p-3">
-                  <ComponentPreview name={component.name} />
+                  <AdminComponentPreview
+                    kind={component.kind}
+                    name={component.name}
+                  />
                 </div>
               </div>
             </Link>

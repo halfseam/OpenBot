@@ -58,6 +58,123 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s-%s" (include "openbot.fullname" .root) .component | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+The same name, under the shorter limit Kubernetes puts on a CronJob.
+
+FIFTY-TWO, NOT SIXTY-THREE. A CronJob is the one workload whose name is not the whole budget: the
+controller names each Job it creates `<cronjob>-<unix-minute>`, so the API server refuses a CronJob
+whose own name leaves no room for that suffix — "must be no more than 52 characters". Sixty-three is
+the right limit for every other object this chart writes and the wrong one here, and the failure is
+not a truncated name, it is `helm install` rejected outright.
+
+Reached at a 43-character release name, which is an ordinary length for a name that says the
+environment and the region. All three of this chart's CronJobs were built on the 63-character helper
+and all three were rejected together.
+
+THE RELEASE NAME IS TRUNCATED, NOT THE WHOLE STRING, so the component survives. Cutting the joined
+name at 52 would give a long release two CronJobs called the same thing — `...-routines` and
+`...-culler` both ending as the first 52 characters of the release name — which is a release that
+cannot install for a second, stranger reason. Trimming the prefix instead keeps the suffix that says
+which sweep this is, which is the part a person reads.
+*/}}
+{{- define "openbot.cronJobName" -}}
+{{- $room := int (max 1 (sub 51 (len .component))) -}}
+{{- $prefix := include "openbot.fullname" .root | trunc $room | trimSuffix "-" -}}
+{{- printf "%s-%s" $prefix .component | trunc 52 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Whether the staged-attachment sweep runs.
+
+ONE ANSWER FOR TWO TEMPLATES, because the CronJob and the NetworkPolicy that fences it must agree:
+a sweep with no policy is the one pod left unfenced on a cluster that enforces them, and a policy
+with no sweep is a resource selecting nothing. They were two copies of the same expression, which is
+the shape that drifts.
+
+GUARDED AT BOTH LEVELS, AND DEFAULTED TO ON. `attachments` is a key this chart did not have before,
+and `helm upgrade --reuse-values` takes the previous release's computed values rather than merging
+the new chart's defaults, so on every existing deployment the whole map is absent — and on a release
+installed between the two, `culler` is present without `enabled`. `(.Values.attachments).culler.enabled`
+parenthesises one level of that and reads the next two bare: with `enabled` missing the sweep and its
+policy silently did not render at all, and with `culler` missing the render died on a nil pointer,
+which fails the install rather than the feature.
+
+`kindIs "invalid"` rather than `| default true`, for the reason `commonEnv` gives above: sprig's
+`default` substitutes on EMPTY, and `false` is empty, so `| default true` would switch the sweep back
+on for the deployment that had deliberately switched it off.
+
+IT ANSWERS THE SAME QUESTION ITS SIBLINGS DO, WHICH IT USED NOT TO. This used to hand the value back
+untouched for its callers to compare against the string `"true"`, and a string comparison is not what
+`if .Values.routines.enabled` next door does. `--set attachments.culler.enabled=1` reaches a template
+as the integer 1, and `=yes` reaches it as the string "yes". Go's templating calls both of those
+true, so the routines CronJob renders for either — while this returned "1" or "yes", matched neither
+caller, and rendered NEITHER the CronJob NOR the NetworkPolicy that fences it. No error, no resource,
+and an operator with every reason to believe the sweep was on. Both spellings were driven through
+`helm template` before this changed and after. The answer is now the template engine's own notion of
+truth, which is the one the rest of the chart was already using.
+
+THE ONE VALUE IT REFUSES RATHER THAN HONOURS, because agreeing with the siblings here would have been
+a regression rather than a fix. That same notion of truth calls the non-empty string "false" TRUE, so
+`--set-string attachments.culler.enabled=false` would start the sweep for somebody who had just
+written the word false. The old string comparison happened to get that one case right, and a fix is
+not allowed to take a correct behaviour away. There is no reading of `--set-string ...=false` that
+means ON and no safe way to guess, so it fails the render with a message naming `--set` instead. That
+is a narrower rule than it looks: only a STRING spelling a falsehood ever reaches it, and `--set`,
+which parses `false` into a boolean, cannot produce one.
+*/}}
+{{- define "openbot.attachmentsCullerEnabled" -}}
+{{- $culler := (.Values.attachments | default dict).culler | default dict -}}
+{{- $enabled := $culler.enabled -}}
+{{- if kindIs "invalid" $enabled -}}
+true
+{{- else if and (kindIs "string" $enabled) (has (lower $enabled) (list "false" "no" "off" "n" "0")) -}}
+{{- fail (printf "attachments.culler.enabled is the string %q, and this chart will not guess which way you meant it. Helm's templating reads every non-empty string as true, so honouring it would turn the staged-attachment sweep ON, which is the opposite of what it spells. Pass a boolean instead: --set attachments.culler.enabled=false, or enabled: false in a values file. --set-string is what made it a string." $enabled) -}}
+{{- else if $enabled -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+
+{{/*
+The service range the Kubernetes API server answers on, or a refusal to render a policy without it.
+
+ONE ANSWER FOR TWO TEMPLATES, for the same reason as the sweep gate above: the API server's policy
+and the computer culler's both need this rule, and both had it wrong in exactly the same way.
+
+WHY THIS REFUSES INSTEAD OF DEFAULTING. Both policies used to write the rule as
+`- {{ with .Values.networkPolicy.kubernetesApiCidr }}to: ...{{ end }}` and let the empty default fall
+straight through the `with`. What fell out was an egress rule carrying ports and NO PEER AT ALL, and
+in Kubernetes that is neither a narrow rule nor an inert one: an empty or absent `to` matches every
+destination. So the shipped default granted 443 and 6443 to everything, which cancelled the `10/8`,
+`172.16/12`, `192.168/16` and `169.254/16` exceptions the rule one line above it spells out. On the
+culler, whose only other egress is DNS and the database, that peerless rule WAS its entire reach: a
+pod holding the database credential could open an HTTPS socket to any address in the cluster or on
+the internet. Rendered and read back before any of this was believed.
+
+THE TWO ALTERNATIVES, AND WHY NEITHER. Rendering no rule at all when nobody has named a CIDR is safe
+and silent, and silent is the whole problem: on a cluster that enforces policy the API server can no
+longer ask for a Bot's computer, so every browser action fails and the deployment looks broken rather
+than fenced — which is the exact failure the comment two rules above this one warns about. Picking a
+default CIDR is worse: the range belongs to the cluster and not to the release, so `172.20.0.0/16` is
+right on EKS and an outage on GKE, and a wrong CIDR is that outage with a plausible-looking values
+file standing behind it. Refusing is the only one of the three that cannot be wrong quietly, and it
+is what this chart does everywhere else a value is unknowable and load-bearing. `helm upgrade`
+renders before it applies anything, so a release that hits this keeps running exactly as it was while
+its operator runs the single command in the message.
+
+SCOPED TO THE POLICIES THAT NEED IT. Reached only from inside `networkPolicy.enabled` and
+`computers.mode: sandbox`, so a deployment with no policies, or with `mode: shared`, never has to
+name it. Nothing else in the chart consults it.
+*/}}
+{{- define "openbot.kubernetesApiCidr" -}}
+{{- $cidr := .Values.networkPolicy.kubernetesApiCidr -}}
+{{- if not $cidr -}}
+{{- fail "networkPolicy.kubernetesApiCidr is required when networkPolicy.enabled is true and computers.mode is sandbox. It is the service range the Kubernetes API server answers on, which is where a per-Bot computer is asked for, and this chart cannot know it: the range belongs to the cluster rather than to this release. Find the address with: kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}' - then name the range it sits in, usually 172.20.0.0/16 on EKS and 10.96.0.0/12 on GKE and kubeadm. It was previously allowed to be empty, which rendered an egress rule with no destination at all: that permitted 443 and 6443 to every address rather than to the API server, so setting this narrows the policy that was already meant to be narrow." -}}
+{{- end -}}
+{{- $cidr -}}
+{{- end -}}
+
 {{- define "openbot.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "openbot.fullname" .) .Values.serviceAccount.name -}}
@@ -66,10 +183,57 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- end -}}
 
-{{/* The image, with the chart's appVersion as the tag unless one is named. */}}
+{{/*
+The image, with the chart's appVersion as the tag unless one is named. Published tags carry a `v`
+(`v0.0.9`), and appVersion is plain semver, so the default is prefixed with `v` to name a tag that
+actually exists. A named `image.tag` is used verbatim.
+*/}}
 {{- define "openbot.image" -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- $tag := .Values.image.tag | default (printf "v%s" .Chart.AppVersion) -}}
+{{- with .Values.image.digest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" .) -}}
+{{- fail (printf "image.digest must be sha256: followed by 64 hex characters, as in a release's container-images.json; got %q." .) -}}
+{{- end -}}
+{{- printf "%s:%s@%s" $.Values.image.repository $tag . -}}
+{{- else -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Where a key of this chart's Secret comes from, for an optional credential.
+
+`chart` and `store` mean the key is certainly there: this chart writes it from the literal, or
+`externalSecrets.data` names it. `unknown` is `secrets.existingSecret`, which cannot be read at
+template time, so the reference is made optional and a Secret without the key still starts. Empty
+means nothing provides it and the variable is left out.
+
+Called with (dict "root" . "key" "composio-api-key" "literal" .Values.secrets.composioApiKey).
+*/}}
+{{- define "openbot.secretKeySource" -}}
+{{- $root := .root -}}
+{{- if .literal -}}
+chart
+{{- else if $root.Values.externalSecrets.enabled -}}
+{{- $named := list -}}
+{{- range $root.Values.externalSecrets.data }}{{- $named = append $named .secretKey }}{{- end -}}
+{{- if has .key $named }}store{{ end -}}
+{{- else if $root.Values.secrets.existingSecret -}}
+unknown
+{{- end -}}
+{{- end -}}
+
+{{/* `config.extraVolumeMounts` and `config.extraVolumes`, for the pods that load the configuration. */}}
+{{- define "openbot.extraVolumeMounts" -}}
+{{- with .Values.config.extraVolumeMounts }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{- define "openbot.extraVolumes" -}}
+{{- with .Values.config.extraVolumes }}
+{{ toYaml . }}
+{{- end }}
 {{- end -}}
 
 {{- define "openbot.secretName" -}}
@@ -140,9 +304,28 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
 - name: BETTER_AUTH_URL
   value: {{ .Values.config.publicUrl | quote }}
 {{- end }}
+{{- /* Guarded: absent on a release upgraded with --reuse-values, which leaves the server's default. */}}
+{{- with (.Values.config).webBotAuth }}
+- name: WEB_BOT_AUTH
+  value: {{ . | quote }}
+{{- end }}
+{{- /*
+  Optional on purpose: the server derives a key from KEY_ENCRYPTION_KEY when this one is absent, so
+  a Secret of your own, or the chart's without `secrets.webBotAuthKey`, simply does not carry it.
+*/}}
+- name: WEB_BOT_AUTH_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: web-bot-auth-key
+      optional: true
 {{- if .Values.config.initialAdminEmails }}
 - name: INITIAL_ADMIN_EMAILS
   value: {{ .Values.config.initialAdminEmails | quote }}
+{{- end }}
+{{- if .Values.config.allowedEmailDomains }}
+- name: SIGNIN_ALLOWED_EMAIL_DOMAINS
+  value: {{ .Values.config.allowedEmailDomains | quote }}
 {{- end }}
 {{- if .Values.config.singleUser }}
 - name: OPENBOT_SINGLE_USER
@@ -202,6 +385,30 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
   value: {{ $maxDepth | quote }}
 - name: BOT_HANDOFF_MAX_PER_RUN
   value: {{ $maxPerRun | quote }}
+{{- $learning := .Values.config.learning | default dict }}
+{{- with $learning.containerId }}
+- name: CPK_INTELLIGENCE_LEARNING_CONTAINER_ID
+  value: {{ . | quote }}
+{{- end }}
+{{- with $learning.revision }}
+- name: CPK_INTELLIGENCE_SKILLS_REVISION
+  value: {{ . | quote }}
+{{- end }}
+{{- /* Absent, as it is under `--reuse-values`, means on: only an explicit false is written. */}}
+{{- if eq (toString $learning.autoAssign) "false" }}
+- name: OPENBOT_LEARNING_AUTO_ASSIGN
+  value: "false"
+{{- end }}
+{{- /* Absent, as under `--reuse-values`, means on, like autoAssign: only an explicit false is written. */}}
+{{- $memory := .Values.config.memory | default dict }}
+{{- if eq (toString $memory.sourceDefaults) "false" }}
+- name: OPENBOT_MEMORY_SOURCE_DEFAULTS
+  value: "false"
+{{- end }}
+{{- if eq (toString $memory.researchDefaults) "false" }}
+- name: OPENBOT_PROACTIVE_DEFAULTS
+  value: "false"
+{{- end }}
 - name: INTELLIGENCE_API_URL
   value: {{ .Values.config.intelligence.apiUrl | quote }}
 - name: INTELLIGENCE_GATEWAY_WS_URL
@@ -211,11 +418,19 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
     secretKeyRef:
       name: {{ include "openbot.secretName" . }}
       key: intelligence-api-key
+{{- /* From a store or an existingSecret too: emitted for the literal alone, a synced token reached
+     the Secret and never the pod, and a self-hosted Intelligence ran unlicensed. */}}
+{{- $license := include "openbot.secretKeySource" (dict "root" . "key" "license-token" "literal" .Values.secrets.licenseToken) }}
+{{- if $license }}
 - name: COPILOTKIT_LICENSE_TOKEN
   valueFrom:
     secretKeyRef:
       name: {{ include "openbot.secretName" . }}
       key: license-token
+      {{- if eq $license "unknown" }}
+      optional: true
+      {{- end }}
+{{- end }}
 {{- with .Values.config.managedAgent.url }}
 - name: MANAGED_AGENT_AG_UI_URL
   value: {{ . | quote }}
@@ -293,6 +508,120 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
       key: computer-token
       optional: {{ eq .Values.computers.mode "external" }}
 {{- /*
+  Delivery (Slack and Teams through OpenTag, text messages, push), SCIM, inbound email and
+  OpenTelemetry export.
+
+  PARENTHESISED, every map, for the reason `config.handoff` is above: these are keys this chart did
+  not have before, and `helm upgrade --reuse-values` leaves them absent on an existing deployment.
+
+  A secret the server requires is referenced whenever its switch is on, never `optional`, so a
+  Secret that lacks it fails to start the pod with the key named rather than starting a server that
+  then refuses. A secret the server treats as optional is referenced `optional: true` whenever its
+  feature is, so it can live in `secrets.existingSecret` or a store without the chart reading it.
+*/}}
+{{- $opentag := .Values.config.opentag | default dict }}
+{{- if $opentag.enabled }}
+- name: OPENTAG_SHARED_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: opentag-shared-secret
+{{- with $opentag.url }}
+- name: OPENTAG_URL
+  value: {{ . | quote }}
+{{- end }}
+{{- with $opentag.botIconUrlTemplate }}
+- name: OPENTAG_BOT_ICON_URL_TEMPLATE
+  value: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- $sms := .Values.config.sms | default dict }}
+{{- if $sms.enabled }}
+- name: TWILIO_ACCOUNT_SID
+  value: {{ $sms.accountSid | quote }}
+- name: TWILIO_AUTH_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: twilio-auth-token
+- name: TWILIO_VERIFY_SERVICE_SID
+  value: {{ $sms.verifyServiceSid | quote }}
+- name: TWILIO_FROM_NUMBER
+  value: {{ $sms.fromNumber | quote }}
+{{- end }}
+{{- with (.Values.config.push | default dict).projectId }}
+- name: EXPO_PROJECT_ID
+  value: {{ . | quote }}
+- name: EXPO_ACCESS_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" $ }}
+      key: expo-access-token
+      optional: true
+{{- end }}
+{{- with .Values.config.deliveryPublicUrl }}
+- name: DELIVERY_PUBLIC_URL
+  value: {{ . | quote }}
+{{- end }}
+{{- $scim := .Values.config.scim | default dict }}
+{{- if $scim.enabled }}
+- name: SCIM_BEARER_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: scim-bearer-token
+- name: SCIM_BEARER_TOKEN_NEXT
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: scim-bearer-token-next
+      optional: true
+{{- with $scim.connectionId }}
+- name: SCIM_CONNECTION_ID
+  value: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- $inboundEmail := .Values.config.inboundEmail | default dict }}
+{{- with $inboundEmail.domain }}
+- name: OPENBOT_INBOUND_EMAIL_DOMAIN
+  value: {{ . | quote }}
+{{- end }}
+{{- with $inboundEmail.snsTopicArns }}
+- name: OPENBOT_INBOUND_EMAIL_SNS_TOPIC_ARNS
+  value: {{ . | quote }}
+{{- end }}
+{{- $otel := .Values.config.otel | default dict }}
+{{- if or $otel.endpoint $otel.logsEndpoint }}
+{{- with $otel.endpoint }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ . | quote }}
+{{- end }}
+{{- with $otel.logsEndpoint }}
+- name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+  value: {{ . | quote }}
+{{- end }}
+{{- with $otel.serviceName }}
+- name: OTEL_SERVICE_NAME
+  value: {{ . | quote }}
+{{- end }}
+{{- if $otel.paused }}
+- name: OPENBOT_OTEL_EXPORT
+  value: "off"
+{{- end }}
+- name: OTEL_EXPORTER_OTLP_LOGS_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: otel-logs-headers
+      optional: true
+- name: OTEL_EXPORTER_OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "openbot.secretName" . }}
+      key: otel-headers
+      optional: true
+{{- end }}
+{{- /*
   One definition, for the same reason `openbot.databaseUrlEnv` is one (see its comment above): the
   API server needs this value to RECOGNISE the worker, and the routines CronJob needs the same value
   to BE the worker. Two definitions could drift; this can't. Gated on `routines.enabled` so a
@@ -347,6 +676,31 @@ podAntiAffinity:
 {{- end -}}
 
 {{/*
+The computer settings this chart has values for, as a JSON list of env entries.
+
+One definition, read by the shared StatefulSet and by the per-Bot sandbox template, so a computer
+cannot be headed in one mode and headless in the other, or proxied in one and not the other.
+
+Each key is reached through a guard, because `helm upgrade --reuse-values` hands an existing release
+none of the keys this release added (see scripts/check-new-values-keys.ts). Absent `browserMode`
+leaves the computer to its own default, which is headed on Linux, the same thing.
+*/}}
+{{- define "openbot.computerEnv" -}}
+{{- $env := list -}}
+{{- $computers := .Values.computers | default dict -}}
+{{- with $computers.browserMode -}}
+{{- $env = append $env (dict "name" "COMPUTER_BROWSER_MODE" "value" (toString .)) -}}
+{{- end -}}
+{{- $egressProxy := $computers.egressProxy | default dict -}}
+{{- if $egressProxy.enabled -}}
+{{- $env = append $env (dict "name" "EGRESS_PROXY_DEFAULT" "valueFrom" (dict "secretKeyRef" (dict
+  "name" (default (include "openbot.secretName" .) $egressProxy.existingSecret)
+  "key" (ternary (default "egress-proxy-url" $egressProxy.existingSecretKey) "egress-proxy-url" (not (empty $egressProxy.existingSecret)))))) -}}
+{{- end -}}
+{{- toJson $env -}}
+{{- end -}}
+
+{{/*
 The pod and volumes every Bot's computer is cut from, as JSON.
 
 One definition, used by the ConfigMap the server reads and by the SandboxTemplate a warm pool cuts
@@ -357,7 +711,16 @@ the container that opens pages a person named and runs commands a model chose wa
 could not do much with it, which is not the point: this is the last pod in the deployment that should
 be able to address the API server at all, and the default is the wrong way round.
 */}}
+{{/*
+`HOME` and `securityContext` below.
+
+This pod overrides the command to run the browser process alone, so it never reaches the s6 service
+that the all-in-one image uses to drop to `pwuser` and to set `HOME=/home/pwuser`. Both are
+therefore set here instead. See `computers.podSecurityContext` in values.yaml for why the uid is
+1001 and what is deliberately NOT set alongside it.
+*/}}
 {{- define "openbot.sandboxPodTemplate" -}}
+{{- $computerEnv := include "openbot.computerEnv" . | fromJsonArray -}}
 {{- $spec := dict
   "podTemplate" (dict
     "metadata" (dict "labels" (dict
@@ -378,9 +741,12 @@ be able to address the API server at all, and the default is the wrong way round
             (dict "name" "PORT" "value" "4100")
             (dict "name" "WORKSPACE_DIR" "value" "/workspace")
             (dict "name" "PROFILES_DIR" "value" "/profiles")
+            (dict "name" "HOME" "value" "/home/pwuser")
+            (dict "name" "BUN_INSTALL" "value" "/home/pwuser/.bun")
             (dict "name" "COMPUTER_TOKEN" "valueFrom" (dict "secretKeyRef" (dict
               "name" (default (include "openbot.secretName" .) .Values.computers.existingTokenSecret)
               "key" "computer-token"))))
+          $computerEnv
           .Values.computers.extraEnv)
         "volumeMounts" (list
           (dict "name" "profiles" "mountPath" "/profiles")
@@ -392,6 +758,8 @@ be able to address the API server at all, and the default is the wrong way round
         "resources" .Values.computers.resources)))) -}}
 {{- $pod := index $spec "podTemplate" -}}
 {{- $podSpec := index $pod "spec" -}}
+{{/* The user the image already built. See `computers.podSecurityContext` in values.yaml. */}}
+{{- with .Values.computers.podSecurityContext }}{{- $_ := set $podSpec "securityContext" . }}{{- end }}
 {{- with .Values.computers.runtimeClassName }}{{- $_ := set $podSpec "runtimeClassName" . }}{{- end }}
 {{- with .Values.imagePullSecrets }}{{- $_ := set $podSpec "imagePullSecrets" . }}{{- end }}
 {{- with .Values.computers.nodeSelector }}{{- $_ := set $podSpec "nodeSelector" . }}{{- end }}
@@ -431,5 +799,31 @@ than anything that names the cause.
 */}}
 {{- define "openbot.automountToken" -}}
 {{- or .Values.serviceAccount.automountServiceAccountToken (eq .Values.computers.mode "sandbox") -}}
+{{- end -}}
+
+{{- /*
+  The operator's credential for creating the openbot Learning container (values: config.learning.setup).
+
+  Read through `default dict` at every level, because `setup` is a key this chart did not have before
+  and `helm upgrade --reuse-values` hands back the previous release's values without it.
+*/}}
+{{- define "openbot.learningSetup" -}}
+{{- $learning := .Values.config.learning | default dict -}}
+{{- toYaml ($learning.setup | default dict) -}}
+{{- end -}}
+
+{{- /* INTELLIGENCE_SERVICE_TOKEN and INTELLIGENCE_PROJECT_ID, when the operator named a token Secret. */}}
+{{- define "openbot.learningServiceTokenEnv" -}}
+{{- $setup := include "openbot.learningSetup" . | fromYaml -}}
+{{- $token := $setup.serviceTokenSecret | default dict -}}
+{{- if $token.name }}
+- name: INTELLIGENCE_SERVICE_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ $token.name | quote }}
+      key: {{ $token.key | default "token" | quote }}
+- name: INTELLIGENCE_PROJECT_ID
+  value: {{ $setup.projectId | toString | quote }}
+{{- end }}
 {{- end -}}
 

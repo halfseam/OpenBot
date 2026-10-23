@@ -14,6 +14,7 @@ import {
   ToolMessage,
 } from "@langchain/core/messages";
 import { COMPUTER_GUIDANCE, NO_ANSWER_CAME } from "../../shared/bot-prompt";
+import { userContent } from "../../shared/user-content";
 
 /*
  * Re-exported so this module's own tests and callers keep reading it from here, while the wording
@@ -21,9 +22,31 @@ import { COMPUTER_GUIDANCE, NO_ANSWER_CAME } from "../../shared/bot-prompt";
  */
 export { NO_ANSWER_CAME };
 
+/**
+ * The providers that take one system prompt, and take it first.
+ *
+ * Anthropic's Messages API has the system prompt as a field of the request rather than as a turn,
+ * and Gemini has it as `systemInstruction`, so neither integration has anywhere to put a second one:
+ * `@langchain/anthropic` throws "System messages are only permitted as the first passed message."
+ * and `@langchain/google-genai` throws "System message should be the first one", both before any
+ * request is made. OpenAI takes a system turn anywhere in a conversation.
+ */
+const ONE_SYSTEM_PROMPT = new Set(["anthropic", "google"]);
+
 /** Translate the conversation AG-UI carries into LangChain's message classes. */
-export function toLangChainMessages(input: RunAgentInput): BaseMessage[] {
-  const messages: BaseMessage[] = [new SystemMessage(COMPUTER_GUIDANCE)];
+export function toLangChainMessages(
+  input: RunAgentInput,
+  provider = "openai",
+): BaseMessage[] {
+  const messages: BaseMessage[] = [
+    new SystemMessage(COMPUTER_GUIDANCE),
+    // AG-UI carries application context separately from conversation history. CopilotKit puts
+    // the A2UI catalog and tool instructions here; dropping it leaves the model guessing the
+    // component schema and can strand the renderer on an invalid, never-painted surface.
+    ...(input.context ?? []).map(
+      ({ description, value }) => new SystemMessage(`${description}\n${value}`),
+    ),
+  ];
 
   /*
    * Which calls in this history were ever answered.
@@ -47,23 +70,33 @@ export function toLangChainMessages(input: RunAgentInput): BaseMessage[] {
       .filter((id): id is string => Boolean(id)),
   );
 
+  /*
+   * Tool results, by the call they answer.
+   *
+   * The history is not guaranteed to arrive with a result after the call it belongs to. Read back
+   * from the durable thread store it arrives the other way round, result first, which is a payload
+   * no provider accepts: a tool message with no preceding call, and then a call with nothing
+   * following it. The model answers that with silence rather than an error, which is the worst of
+   * both, so the pairing is rebuilt here instead of trusted.
+   */
+  const resultsByCall = new Map<string, string>();
   for (const message of input.messages) {
+    if (message.role !== "tool") continue;
+    const id = (message as { toolCallId?: string }).toolCallId;
+    if (id) resultsByCall.set(id, String(message.content ?? ""));
+  }
+
+  for (const message of input.messages) {
+    // Placed with the call they answer, below, rather than wherever they arrived.
+    if (message.role === "tool") continue;
     if (message.role === "user") {
-      messages.push(new HumanMessage(String(message.content ?? "")));
+      messages.push(
+        new HumanMessage({ content: userContent(message.content) }),
+      );
       continue;
     }
     if (message.role === "system" || message.role === "developer") {
       messages.push(new SystemMessage(String(message.content ?? "")));
-      continue;
-    }
-    if (message.role === "tool") {
-      // Tool results are appended so the model can continue from the completed call.
-      messages.push(
-        new ToolMessage({
-          tool_call_id: message.toolCallId,
-          content: String(message.content ?? ""),
-        }),
-      );
       continue;
     }
     if (message.role === "assistant") {
@@ -83,22 +116,23 @@ export function toLangChainMessages(input: RunAgentInput): BaseMessage[] {
       );
 
       /*
-       * Close any of its calls that nothing ever answered, immediately after it.
+       * Every call this message made, answered, immediately after it.
        *
-       * Position is not cosmetic: a tool result has to follow the assistant message that made the
-       * call, so these go here rather than being appended at the end. A call answered later in the
-       * history is left alone and its real answer arrives in its own turn.
+       * The real result where there is one, wherever it arrived in the input, and `NO_ANSWER_CAME`
+       * where there is not. Both cases are the same requirement: a call must be followed by its
+       * result, and the provider rejects the message outright otherwise.
        */
       for (const call of message.toolCalls ?? []) {
-        if (call.id && !answered.has(call.id)) {
-          messages.push(
-            new ToolMessage({
-              tool_call_id: call.id,
-              content: NO_ANSWER_CAME,
-              name: callDetails(call).name,
-            }),
-          );
-        }
+        if (!call.id) continue;
+        messages.push(
+          new ToolMessage({
+            tool_call_id: call.id,
+            content: answered.has(call.id)
+              ? (resultsByCall.get(call.id) ?? "")
+              : NO_ANSWER_CAME,
+            name: callDetails(call).name,
+          }),
+        );
       }
     }
   }
@@ -123,11 +157,36 @@ export function toLangChainMessages(input: RunAgentInput): BaseMessage[] {
     messages.push(new HumanMessage(CONTINUE_TURN));
   }
 
-  return messages;
+  /*
+   * Every run holds more than one system message, so on those providers every run failed.
+   *
+   * The computer guidance opens this list and the caller's context follows it, and the server puts a
+   * coworker's standing role at the head of `input.messages` on every run it sends a remote Bot. A
+   * skill somebody picks arrives as a system turn ahead of their message, too. So a Bot set to
+   * `BOT_PROVIDER=anthropic` or `google` answered nothing at all: each run ended in the integration's
+   * refusal, before the model was asked.
+   *
+   * Folded into one, in the order given, and only for those providers. On OpenAI a skill's
+   * instruction stays beside the message it was picked for.
+   */
+  return ONE_SYSTEM_PROMPT.has(provider)
+    ? withOneSystemPrompt(messages)
+    : messages;
 }
 
 /** The continuation a strict provider needs when a run carries only deltas. See toLangChainMessages. */
 const CONTINUE_TURN = "Continue from where the conversation above left off.";
+
+/** Every system message's text as one system message at the top, and the rest as they were. */
+function withOneSystemPrompt(messages: BaseMessage[]): BaseMessage[] {
+  const system = messages.filter((message) => message instanceof SystemMessage);
+  return [
+    new SystemMessage(
+      system.map((message) => String(message.content)).join("\n\n"),
+    ),
+    ...messages.filter((message) => !(message instanceof SystemMessage)),
+  ];
+}
 
 function parseArguments(raw: string): Record<string, unknown> {
   try {

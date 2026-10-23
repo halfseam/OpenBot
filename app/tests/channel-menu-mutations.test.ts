@@ -37,12 +37,26 @@ function invalidationRecorder() {
   return { queryClient, invalidated };
 }
 
+/*
+ * The context TanStack Query hands a mutation callback alongside its variables. These tests drive
+ * the callbacks directly rather than through a MutationObserver, so they have to supply it. Both
+ * fields are the real thing rather than a stand-in: `meta` is undefined exactly as it is for a
+ * mutation declared without one, and `mutationKey` is optional and genuinely absent, because none
+ * of these options factories sets one.
+ */
+function mutationContext(queryClient: QueryClient) {
+  return { client: queryClient, meta: undefined };
+}
+
 test("pinning PUTs the flag to the channel's pin route and invalidates the roster", async () => {
   const seen = capturingFetch(200, { pinned: true });
   const { queryClient, invalidated } = invalidationRecorder();
   const options = setChannelPinnedMutationOptions(queryClient);
 
-  await options.mutationFn?.({ channelId: "channel-1", pinned: true });
+  await options.mutationFn?.(
+    { channelId: "channel-1", pinned: true },
+    mutationContext(queryClient),
+  );
   await options.onSuccess?.(
     undefined as never,
     { channelId: "channel-1", pinned: true },
@@ -62,7 +76,7 @@ test("deleting sends DELETE to the channel route and invalidates the roster", as
   const { queryClient, invalidated } = invalidationRecorder();
   const options = deleteChannelMutationOptions(queryClient);
 
-  await options.mutationFn?.("channel-1");
+  await options.mutationFn?.("channel-1", mutationContext(queryClient));
   await options.onSuccess?.(
     undefined as never,
     "channel-1",
@@ -84,7 +98,9 @@ test("a refused delete surfaces the server's sentence", async () => {
   const { queryClient } = invalidationRecorder();
   const options = deleteChannelMutationOptions(queryClient);
 
-  await expect(options.mutationFn?.("channel-1")).rejects.toThrow(
+  await expect(
+    options.mutationFn?.("channel-1", mutationContext(queryClient)),
+  ).rejects.toThrow(
     "This channel is defined by the deployment package, so it cannot be deleted here.",
   );
 });
@@ -102,6 +118,7 @@ test("marking read PUTs the read route and patches lastReadAt in place", async (
             agentIds: ["agent-1"],
             threadId: "thread-1",
             active: true,
+            summary: null,
             lastMessage: "hello",
             lastMessageAt: "2026-08-25T12:00:00.000Z",
             lastMessageAgentId: "agent-1",
@@ -117,8 +134,8 @@ test("marking read PUTs the read route and patches lastReadAt in place", async (
   } satisfies InfiniteData<ChannelPage>);
   const options = markChannelReadMutationOptions(queryClient);
 
-  options.onMutate?.("channel-1");
-  await options.mutationFn?.("channel-1");
+  options.onMutate?.("channel-1", mutationContext(queryClient));
+  await options.mutationFn?.("channel-1", mutationContext(queryClient));
 
   expect(seen).toHaveLength(1);
   expect(seen[0]?.url).toBe("/api/channels/channel-1/read");
@@ -126,10 +143,21 @@ test("marking read PUTs the read route and patches lastReadAt in place", async (
   const patched = queryClient.getQueryData<InfiniteData<ChannelPage>>(
     channelKeys.list(),
   );
-  // The dot clears from the cache before the wire answered, and nothing was invalidated:
-  // there is no onSuccess to queue a refetch that would race the socket's own patches.
+  // The dot clears from the cache before the wire answered.
   expect(patched?.pages[0]?.channels[0]?.lastReadAt).not.toBeNull();
-  expect(options.onSuccess).toBeUndefined();
+});
+
+test("a landed mark-read refreshes the Bots badge, and never the roster the socket patches", async () => {
+  capturingFetch(204, undefined);
+  const { queryClient, invalidated } = invalidationRecorder();
+  const options = markChannelReadMutationOptions(queryClient);
+  await options.onSuccess?.(
+    undefined,
+    "channel-1",
+    undefined,
+    mutationContext(queryClient),
+  );
+  expect(invalidated).toEqual([{ queryKey: ["bot-lifecycle", "attention"] }]);
 });
 
 test("a message stamped by a clock ahead of ours still reads as seen after marking", async () => {
@@ -146,6 +174,7 @@ test("a message stamped by a clock ahead of ours still reads as seen after marki
             agentIds: ["agent-1"],
             threadId: "thread-1",
             active: true,
+            summary: null,
             lastMessage: "hello",
             lastMessageAt: futureLastMessageAt,
             lastMessageAgentId: "agent-1",
@@ -161,7 +190,7 @@ test("a message stamped by a clock ahead of ours still reads as seen after marki
   } satisfies InfiniteData<ChannelPage>);
   const options = markChannelReadMutationOptions(queryClient);
 
-  options.onMutate?.("channel-1");
+  options.onMutate?.("channel-1", mutationContext(queryClient));
 
   const patched = queryClient.getQueryData<InfiniteData<ChannelPage>>(
     channelKeys.list(),

@@ -15,8 +15,9 @@ behind a list. Twelve screens render through `PageShell` today and seven build t
 It does not cover where the data comes from — that is `openbot-data-access`, which owns queries,
 mutations, and the pending/error/empty/rows branching. It does not cover the gallery components
 under `components/gallery`, which a Bot draws inside a conversation rather than a person navigating
-to. It does not cover the primitives under `components/ui`, which are shadcn files with their own
-upstream.
+to. It does not cover the primitives under `components/ui`, which are this repository's own design-system
+primitives: they began as shadcn output, but there is no upstream to re-pull from, and they are
+formatted and linted like the rest of the app.
 
 ## The Default
 
@@ -50,8 +51,9 @@ PageShell        the page: header (title, description, action, backButton) then 
     PageEmpty    what a section says when it has nothing to list
 ```
 
-`PageShell` takes a `width`: `prose` (`max-w-2xl`) is the default because configuration is mostly
-reading, and a row of label-and-control has no business being wider than the sentence explaining it.
+`PageShell` takes a `width`: `prose` (`max-w-3xl`, 720px here) is the default, and every
+configuration screen uses it so no screen is wider than another. Sentences inside it are held to
+`max-w-prose`, so the column has room for a label beside its control without stretching the text.
 `wide` (`max-w-5xl`) exists for one screen — `admin/audit.tsx`, because an audit log is a table to be
 scanned and prose width would wrap every row. It is not a licence for anything else to be wide.
 

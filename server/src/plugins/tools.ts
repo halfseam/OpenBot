@@ -1,6 +1,24 @@
-import { z } from "zod";
+import { ApprovalRefusedError } from "../approvals/types";
+import type { AuditInitiator } from "../audit";
+import { type GrantedTool, parametersFor } from "@openbot/toolkit/granted-tool";
+import { HeadlessToolSuspension } from "@openbot/toolkit/headless-tools";
+import { markUntrusted } from "../untrusted-content";
+import {
+  type CatalogueEntry,
+  catalogueEntry,
+  researchRoleFor,
+} from "./catalogue";
+import {
+  addressedTo,
+  SHOW_APP_ACCESS_TOOL,
+} from "@openbot/shared/connect-prompt";
+import { type ResearchRole, RESEARCH_TOOLS } from "@openbot/shared/research";
 import type { SelectableSkill } from "./selection";
-import { PluginRefusedError, type PluginStore } from "./store";
+import {
+  isDeploymentFault,
+  PluginRefusedError,
+  type PluginStore,
+} from "./store";
 
 /**
  * The tools a Bot may call, as the runtime's own tool definitions, executed on the server.
@@ -27,35 +45,33 @@ import { PluginRefusedError, type PluginStore } from "./store";
  */
 export const REFUSAL_MARKER = "Refused.";
 
-export type GrantedTool = {
-  name: string;
-  description: string;
-  parameters: z.ZodType;
-  execute: (args: unknown) => Promise<string>;
-  /**
-   * `<serverId>/<toolName>`, carried alongside the name the model is offered.
-   *
-   * The two spellings exist because a model tool name may not contain a slash, and selection has to
-   * compare a tool against what a skill declared, which is written in the ref spelling because that
-   * is how a grant is written. Carried rather than derived at the comparison, so there is one place
-   * the two forms are converted (`toolNameFor`) and no second parser to drift from it.
-   */
-  ref: string;
-};
-
 /**
- * A vendor's JSON Schema as something the model can be handed.
+ * What a model is told a vendor answered: its result as written, or its error named as one.
  *
- * Anything that is not an object schema describes something other than a tool's arguments, and a
- * schema we cannot read must not stop the tool being offered: an open object lets the model call it
- * and lets the vendor be the one to reject a bad argument, which is where that error belongs.
+ * `isError` used to be dropped, and it cost a diagnosis. Google refused the Drive MCP server with
+ * `isError: true` and the text "The caller does not have permission"; the model received that as an
+ * ordinary result, believed it, and told the person it had no access to their Drive — which read as
+ * the Bot being confused rather than as the vendor refusing.
+ *
+ * The prefix is the vendor's, and says so. It is deliberately NOT `REFUSAL_MARKER`: that one means
+ * this deployment declined, and the transcript draws it as a boundary holding. A vendor saying no is
+ * a different fact with a different fix, and collapsing the two would make a misconfigured connector
+ * look like a policy working correctly.
+ *
+ * One function for both doors to one store — {@link grantedTools} for a Bot running here, and
+ * `/api/agent-tools/call` for a Bot running its own loop — because the second answered with the bare
+ * text, and neither framework Bot words an `isError` answer on its way through. Which door a Bot
+ * arrives at is a deployment topology decision, not a decision about what its model is told.
  */
-export function parametersFor(inputSchema: Record<string, unknown>): z.ZodType {
-  try {
-    const converted = z.fromJSONSchema(inputSchema as never);
-    if (converted instanceof z.ZodObject) return converted;
-  } catch {}
-  return z.object({}).catchall(z.unknown());
+export function vendorAnswer(result: { text: string; isError: boolean }) {
+  /*
+   * Marked as outside content either way. A vendor's answer is somebody else's data: an issue title,
+   * an email body, a document, any of which can be written to read like an instruction. The error
+   * text is the vendor's too. See untrusted-content.ts; the transcript unwraps the envelope to draw it.
+   */
+  return result.isError
+    ? `The vendor reported an error:\n${markUntrusted(result.text, "connector error")}`
+    : markUntrusted(result.text, "connector result");
 }
 
 /**
@@ -88,10 +104,19 @@ export function grantedToolGuidance(
    */
   connectedButNotHeld: readonly string[] = [],
 ): string {
-  if (tools.length === 0 && connectedButNotHeld.length === 0) return "";
+  /*
+   * THE CARD TOOL IS NOT A SYSTEM. It is offered to every Bot so a missing app can be put in front of
+   * the person with the step that fixes it, and it reaches nothing — listed beside the vendors it
+   * would read as one more system this Bot "can reach directly, as the person asking". It is named
+   * below instead, at exactly the sentences that used to end on "an administrator can grant it".
+   */
+  const showsCards = tools.some((tool) => tool.name === SHOW_APP_ACCESS_TOOL);
+  const reaching = tools.filter((tool) => tool.name !== SHOW_APP_ACCESS_TOOL);
+  if (reaching.length === 0 && connectedButNotHeld.length === 0 && !showsCards)
+    return "";
 
   const bySystem = new Map<string, string[]>();
-  for (const tool of tools) {
+  for (const tool of reaching) {
     // `mcp__server__tool`, which is the shape the model is offered.
     const parts = tool.name.replace(/^mcp__/, "").split("__");
     const system = parts.length > 1 ? (parts[0] as string) : "this deployment";
@@ -104,8 +129,10 @@ export function grantedToolGuidance(
     (system) => !held.includes(system),
   );
 
+  const research = researchProviders(reaching);
+
   return [
-    ...(tools.length > 0
+    ...(reaching.length > 0
       ? [
           "You can reach these systems directly, as the person asking, with their own access:",
         ]
@@ -113,7 +140,7 @@ export function grantedToolGuidance(
     ...[...bySystem.entries()].map(
       ([system, names]) => `- ${system}: ${names.join(", ")}`,
     ),
-    ...(tools.length > 0
+    ...(reaching.length > 0
       ? [
           "Use them for anything about those systems. Do NOT browse to one of their websites instead: your",
           "browser is signed in as nobody, so it sees less than these tools do and will meet a sign-in wall",
@@ -125,6 +152,7 @@ export function grantedToolGuidance(
           "access, and the thing that is missing is yours, not theirs.",
         ]
       : []),
+    ...researchGuidance(research),
     /*
      * The vendors this deployment connects to and this Bot does not hold.
      *
@@ -136,15 +164,109 @@ export function grantedToolGuidance(
      */
     ...(missing.length > 0
       ? [
-          ...(tools.length > 0 ? [""] : []),
+          ...(reaching.length > 0 ? [""] : []),
           `This deployment also connects to: ${missing.join(", ")}. You hold none of their tools.`,
-          "If a question needs one of them, say plainly that you have not been granted it and that an",
-          "administrator can grant it on that connector. Do NOT browse to its website: that is not the",
-          "same thing, your browser is signed in as nobody, and it will meet a sign-in wall that the",
-          "connector exists to avoid. Do not ask the person to sign in there either.",
+          ...(showsCards
+            ? [
+                `If a question needs one of them, call ${SHOW_APP_ACCESS_TOOL} with its name: that puts a card in`,
+                "front of the person saying you have not been granted it, with a button to ask an administrator",
+                "for it. Then say so in a sentence; the card already carries the rest.",
+              ]
+            : [
+                "If a question needs one of them, say plainly that you have not been granted it and that an",
+                "administrator can grant it on that connector.",
+              ]),
+          "Do NOT browse to its website: that is not the same thing, your browser is signed in as nobody,",
+          "and it will meet a sign-in wall that the connector exists to avoid. Do not ask the person to",
+          "sign in there either.",
+        ]
+      : []),
+    /*
+     * AN APP THIS DEPLOYMENT DOES NOT CONNECT AT ALL is the one case nothing above names, and the
+     * one a Bot met most bluntly: asked about Gmail on a deployment that has not switched it on, it
+     * had no word for Gmail anywhere in its instructions and either browsed or said it could not.
+     * The card says whether it can be switched on and lets the person ask for it.
+     */
+    ...(showsCards
+      ? [
+          ...(reaching.length > 0 || missing.length > 0 ? [""] : []),
+          `If the person needs a work app that is not named here at all (Gmail, Slack, Salesforce), call`,
+          `${SHOW_APP_ACCESS_TOOL} with its name before saying you cannot reach it: the card tells them whether it`,
+          "can be switched on and lets them ask an administrator. Do not browse to its website instead.",
         ]
       : []),
   ].join("\n");
+}
+
+type ResearchProvider = {
+  entry: CatalogueEntry;
+  search: GrantedTool;
+  fetch: GrantedTool;
+};
+
+/**
+ * The research providers this Bot can actually use: a search tool and a fetch tool from one server.
+ *
+ * One per vendor. A deployment that added a vendor twice, once free and once with its key, has
+ * granted the keyed one for its limits, so that is the one the Bot is told about.
+ */
+function researchProviders(tools: GrantedTool[]): ResearchProvider[] {
+  const byServer = new Map<
+    string,
+    Partial<Record<ResearchRole, GrantedTool>>
+  >();
+  for (const tool of tools) {
+    const role = researchRoleFor(tool.ref);
+    if (!role) continue;
+    const server = tool.ref.slice(0, tool.ref.indexOf("/"));
+    byServer.set(server, { ...byServer.get(server), [role]: tool });
+  }
+  const byVendor = new Map<string, ResearchProvider>();
+  for (const [server, held] of byServer) {
+    const entry = catalogueEntry(server);
+    if (!entry || !held.search || !held.fetch) continue;
+    const provider = { entry, search: held.search, fetch: held.fetch };
+    const existing = byVendor.get(entry.vendor);
+    if (!existing || entry.auth.kind === "deployment-bearer")
+      byVendor.set(entry.vendor, provider);
+  }
+  return [...byVendor.values()];
+}
+
+/**
+ * What a Bot is told about public-web research, the same for every provider.
+ *
+ * Described, not preferred: a Bot holding one of these and some other search tool is not told to
+ * pass the other over. With more than one, the person's choice decides.
+ *
+ * Told to search unprompted for facts that change, because a Bot holding these answered "top five
+ * countries by GDP" from memory and then, asked, said it could search. The bound in the next line
+ * is what keeps that from becoming the open-web hunt the provenance guidance warns about.
+ */
+function researchGuidance(providers: ResearchProvider[]): string[] {
+  if (providers.length === 0) return [];
+  return [
+    "For public-web research you can use:",
+    ...providers.map(
+      ({ entry, search, fetch }) =>
+        `- ${entry.vendor}: ${search.name} finds sources and ${fetch.name} reads selected pages.`,
+    ),
+    ...(providers.length > 1
+      ? [
+          "Use the one the person asks for. Otherwise pick one and keep to it for the conversation.",
+        ]
+      : []),
+    "Search before answering when the answer depends on facts that change: current figures, rankings, prices, who holds a role, recent events. Do not answer those from memory while you hold these tools, even when the person did not ask you to search.",
+    "Keep it bounded: a search or two and a read of the best sources, then answer, and say what you could not confirm.",
+    "These search the public web; they do not connect a person's private account. Send only the research objective, necessary search queries and requested URLs, not a full transcript or private documents.",
+    ...providers.flatMap(({ entry }) =>
+      (RESEARCH_TOOLS[entry.key]?.notes ?? []).map(
+        (note) => `${entry.vendor}: ${note}`,
+      ),
+    ),
+    "Do not name the provider in your answer unless the person asks which one you used: cite the sources you read.",
+    "Cite source URLs and distinguish excerpts from full-page reads. Report provider errors or missing sources; do not invent evidence or quietly bypass a denial. Interactive browser work still uses the authorized computer tools when needed.",
+  ];
 }
 
 /**
@@ -158,13 +280,17 @@ export async function grantedTools(options: {
   store: PluginStore;
   botId: string;
   actorId: string;
+  initiator?: AuditInitiator;
+  /** Whose account a call reaches, when not the asker's; see `callTool`'s `credentialActorId`. */
+  credentialActorFor?: (ref: string) => Promise<string>;
 }): Promise<GrantedTool[]> {
-  const { store, botId, actorId } = options;
+  const { store, botId, actorId, initiator, credentialActorFor } = options;
   const granted = await store.listForAgent(botId);
 
   return granted.tools.map((tool) => ({
     name: tool.toolName,
     ref: tool.ref,
+    initiator,
     description: tool.description,
     parameters: parametersFor(tool.inputSchema),
     execute: async (args: unknown) => {
@@ -179,27 +305,41 @@ export async function grantedTools(options: {
               : {},
           botId,
           actorId,
+          ...(initiator ? { initiator } : {}),
+          ...(credentialActorFor
+            ? { credentialActorId: await credentialActorFor(tool.ref) }
+            : {}),
         });
-        /*
-         * A vendor's error is named as one, not handed over as content.
-         *
-         * `isError` used to be dropped here, and it cost a diagnosis. Google refused the Drive MCP
-         * server with `isError: true` and the text "The caller does not have permission"; the model
-         * received that as an ordinary result, believed it, and told the person it had no access to
-         * their Drive — which read as the Bot being confused rather than as the vendor refusing.
-         *
-         * The prefix is the vendor's, and says so. It is deliberately NOT `REFUSAL_MARKER`: that one
-         * means this deployment declined, and the transcript draws it as a boundary holding. A vendor
-         * saying no is a different fact with a different fix, and collapsing the two would make a
-         * misconfigured connector look like a policy working correctly.
-         */
-        return result.isError
-          ? `The vendor reported an error: ${result.text}`
-          : result.text;
+        return vendorAnswer(result);
       } catch (error) {
-        if (error instanceof PluginRefusedError) {
-          return `${REFUSAL_MARKER} ${error.message}`;
+        if (error instanceof HeadlessToolSuspension) throw error;
+        if (
+          error instanceof PluginRefusedError ||
+          error instanceof ApprovalRefusedError
+        ) {
+          /*
+           * A refusal that carries an app card names the Bot here, the one place both are known:
+           * in a channel several Bots answer in, the card has to ask what the app is for this
+           * person on THIS Bot, not on whichever one the surface happens to have declared.
+           */
+          return `${REFUSAL_MARKER} ${addressedTo(error.message, botId)}`;
         }
+        /*
+         * A contradiction in this deployment's own tables says nothing to a model.
+         *
+         * CRITERION. Nothing on the `isDeploymentFault` shelf may have its message relayed from
+         * here, whatever it says.
+         *
+         * REASON. The branch below hands `error.message` to the model, which is right for a
+         * vendor's own words — that is somebody else's software explaining itself, and the
+         * diagnosis is worth having. These are not that. `ServerRowAmbiguousError` names two of
+         * our columns and tells the reader to rename a row or correct its provenance: an
+         * instruction only an operator can carry out, arriving in an end user's model context as
+         * the reason their tool failed, from which the model can only invent something to tell
+         * them. The operator who can act on it is served on the admin surface instead, where the
+         * refresh route now answers with the sentence in full.
+         */
+        if (isDeploymentFault(error)) return "That tool could not be called.";
         // A vendor that failed is not a refusal, and the difference matters to the person reading
         // the answer: one means "not allowed", the other means "it broke".
         return error instanceof Error

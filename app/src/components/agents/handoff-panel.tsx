@@ -1,11 +1,28 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Fragment } from "react";
 import { AbstractAvatar } from "@/components/agents/abstract-avatar";
+import {
+  PageEmpty,
+  PageRows,
+  PageSection,
+} from "@/components/layout/page-shell";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { handoffRoster } from "@/lib/agents/handoff-roster";
 import { setHandoffGrantMutationOptions } from "@/lib/agents/mutations";
 import {
   agentHandoffQueryOptions,
   agentListQueryOptions,
 } from "@/lib/agents/queries";
+import { queryClient } from "@/query-client";
 
 /**
  * Which Bots this one may hand work to.
@@ -16,96 +33,128 @@ import {
  *
  * DIRECTIONAL, and said so on the screen, because the pair is the one thing about this that is easy
  * to get backwards: this is who this Bot may ask, not who may ask it.
+ *
+ * One row per candidate, with a Switch: the grant is one boolean that takes effect when switched,
+ * which is exactly the row kind a Switch means everywhere else in this app. A whole page section of
+ * its own, and nothing at all when there is nothing to say to somebody who cannot change it.
  */
 export function HandoffPanel({ agentId }: { agentId: string }) {
-  const queryClient = useQueryClient();
   const handoff = useQuery(agentHandoffQueryOptions(agentId));
   const agents = useQuery(agentListQueryOptions());
+  /*
+   * The roster this person has hidden, read so a grant pointing into it can still be taken away.
+   *
+   * Hiding is a per-person display preference and the grants are not filtered by it at all, so
+   * joining the grants against the visible roster alone dropped live grants off the only screen that
+   * manages them. See `handoffRoster`, which is where that join now happens.
+   */
+  const hiddenAgents = useQuery(agentListQueryOptions(true));
   const setGrant = useMutation(setHandoffGrantMutationOptions(queryClient));
 
   if (handoff.isPending || !handoff.data) return null;
-  const { enabled, canGrant, reachable } = handoff.data;
+  const { enabled, canGrant, reachable, grantable } = handoff.data;
 
-  /*
-   * A Bot may not be granted itself, and the server refuses it, so it is not offered here either.
-   * Hidden Bots are already absent from this list.
-   */
-  const others = (agents.data ?? []).filter(
-    (candidate) => candidate.id !== agentId,
-  );
+  // A Bot may not be granted itself, and the server refuses it, so it is not offered here either.
+  const { candidates, granted, total } = handoffRoster({
+    agentId,
+    roster: agents.data ?? [],
+    hidden: hiddenAgents.data ?? [],
+    reachable,
+    grantable,
+  });
 
   // Nothing to say to somebody who cannot change it and has nothing to read.
   if (!canGrant && reachable.length === 0) return null;
 
   return (
-    <section className="mt-6 grid gap-2">
-      <h2 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-        Bots it may ask
-      </h2>
+    <PageSection
+      action={
+        /* The current answer at a glance, so the list below is detail rather than homework. */
+        grantable && total > 0 ? (
+          <span className="text-muted-foreground text-sm tabular-nums">
+            {granted} of {total}
+          </span>
+        ) : null
+      }
+      description="The Bots this one can ask for help. This doesn't change who can ask it. Their answers come back into the same conversation, under their name."
+      title="Bots it can ask"
+    >
+      {/* Facts about the deployment rather than rows to act on, so said as sentences. */}
+      {enabled ? null : (
+        <PageEmpty>
+          Handing work between Bots is turned off. These settings are kept, and
+          they apply again once an admin turns it back on.
+        </PageEmpty>
+      )}
 
-      <p className="text-muted-foreground text-sm">
-        {enabled
-          ? "Work this Bot cannot do itself, it may hand to one of these. The Bot it asks answers in its own conversation, as itself."
-          : "Handing work between Bots is switched off for this deployment, so none of these takes effect until it is switched back on."}
-      </p>
+      {grantable ? null : (
+        <PageEmpty>
+          This Bot can't hand work to other Bots. Other Bots can still hand work
+          to it.
+        </PageEmpty>
+      )}
 
       {setGrant.error ? (
-        <p className="text-destructive text-sm" role="alert">
+        <p className="mt-4 text-destructive text-sm" role="alert">
           {setGrant.error.message}
         </p>
       ) : null}
 
-      {others.length === 0 ? (
-        <p className="text-muted-foreground text-sm">
-          There is no other Bot here to hand work to.
-        </p>
-      ) : (
-        <ul className="grid gap-1 rounded-lg border border-border bg-card p-1">
-          {others.map((candidate) => {
-            const held = reachable.includes(candidate.id);
-            return (
-              <li
-                className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5"
-                key={candidate.id}
-              >
-                <span className="flex min-w-0 items-center gap-2">
+      {grantable && total === 0 ? (
+        <PageEmpty>
+          No other Bots yet. When there are more, you can let this Bot ask them
+          here.
+        </PageEmpty>
+      ) : null}
+      {candidates.length > 0 ? (
+        <PageRows>
+          {candidates.map((candidate, index) => (
+            <Fragment key={candidate.id}>
+              {index > 0 ? <Separator /> : null}
+              <Item size="sm">
+                <ItemMedia>
                   <AbstractAvatar
                     name={candidate.name}
                     seed={candidate.avatarSeed}
-                    size={24}
+                    size={28}
                   />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm">
-                      {candidate.name}
-                    </span>
-                    <span className="block truncate text-muted-foreground text-xs">
-                      {candidate.title}
-                    </span>
-                  </span>
-                </span>
-                <Switch
-                  aria-label={`Let this Bot ask ${candidate.name}`}
-                  checked={held}
-                  disabled={!canGrant || setGrant.isPending}
-                  onCheckedChange={(next: boolean) =>
-                    setGrant.mutate({
-                      agentId,
-                      ref: candidate.id,
-                      granted: next,
-                    })
-                  }
-                />
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                </ItemMedia>
+                <ItemContent>
+                  <ItemTitle>{candidate.name}</ItemTitle>
+                  {/*
+                   * Said on the row, because otherwise it is a coworker that is not on your roster
+                   * appearing in a list with no explanation. It is here only because this Bot may
+                   * already ask it, and that is the sentence a person needs to decide what to do.
+                   */}
+                  <ItemDescription>
+                    {candidate.hidden
+                      ? `${candidate.title} · hidden from your Bots list`
+                      : candidate.title}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <Switch
+                    aria-label={`Let this Bot ask ${candidate.name}`}
+                    checked={reachable.includes(candidate.id)}
+                    disabled={!canGrant || setGrant.isPending}
+                    onCheckedChange={(next: boolean) =>
+                      setGrant.mutate({
+                        agentId,
+                        ref: candidate.id,
+                        granted: next,
+                      })
+                    }
+                  />
+                </ItemActions>
+              </Item>
+            </Fragment>
+          ))}
+        </PageRows>
+      ) : null}
 
       {canGrant ? null : (
-        <p className="text-muted-foreground text-xs">
-          An administrator decides which Bots may be asked.
-        </p>
+        <PageEmpty>An admin decides which Bots this one can ask.</PageEmpty>
       )}
-    </section>
+    </PageSection>
   );
 }

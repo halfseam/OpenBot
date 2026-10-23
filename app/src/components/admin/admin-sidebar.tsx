@@ -1,6 +1,7 @@
 import {
   IconArrowLeft,
   IconBuildingBank,
+  IconChecks,
   IconCode,
   IconDeviceDesktop,
   IconFileText,
@@ -57,7 +58,12 @@ const GROUPS: {
         linkOptions: { to: "/admin/boundaries" },
       },
       {
-        title: "Computadores",
+        title: "Approvals",
+        icon: IconChecks,
+        linkOptions: { to: "/admin/approvals" },
+      },
+      {
+        title: "Computers",
         icon: IconDeviceDesktop,
         linkOptions: { to: "/admin/computers" },
       },
@@ -67,7 +73,17 @@ const GROUPS: {
         linkOptions: { to: "/admin/plugins" },
       },
       {
-        title: "Componentes",
+        title: "Skills",
+        icon: IconFileText,
+        linkOptions: { to: "/admin/skills" },
+      },
+      {
+        title: "Automatic learning",
+        icon: IconFileText,
+        linkOptions: { to: "/admin/learning" },
+      },
+      {
+        title: "UI components",
         icon: IconLayoutGrid,
         linkOptions: { to: "/admin/components" },
       },

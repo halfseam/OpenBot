@@ -48,8 +48,11 @@ function namedAsAllowed(
   } catch {
     return false;
   }
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const host = url.host.toLowerCase().replace(/^\[/, "").replace(/\]/, "");
+  // As the parser spells them, brackets included: `[::1]:8443` names an address and a port and
+  // `[::1:8443]` names an address, and with the brackets gone the two read as one. The list is
+  // stored in the same spelling (see `normalizeAllowedHost` in config.ts).
+  const hostname = url.hostname.toLowerCase();
+  const host = url.port ? `${hostname}:${url.port}` : hostname;
   return allowedHosts.has(host) || allowedHosts.has(hostname);
 }
 
@@ -96,12 +99,12 @@ export function checkAgentEndpoint(
     return { allowed: true, url: new URL(raw.trim()).toString() };
   }
   if (!verdict.allowed) {
-    // The navigation wording talks about "the assistant opening" a page, which is not what is
+    // The navigation wording talks about "the Bot opening" a page, which is not what is
     // happening here, so the reason is restated for the form surface.
     return {
       allowed: false,
       reason: verdict.reason.replace(
-        /the assistant is never allowed to open it\.|the assistant is not allowed to open it\./,
+        /the Bot can never open it\.|the Bot can't open it\./,
         "an agent may not live there.",
       ),
     };

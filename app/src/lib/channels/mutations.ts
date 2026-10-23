@@ -3,6 +3,7 @@ import {
   mutationOptions,
   type QueryClient,
 } from "@tanstack/react-query";
+import { botLifecycleKeys } from "@/lib/bot-lifecycle/queries";
 import { client, tryClient } from "@/lib/client";
 import { type AgentChannel, type ChannelPage, channelKeys } from "./queries";
 
@@ -17,7 +18,7 @@ export function createChannelMutationOptions(queryClient: QueryClient) {
       const response = await client("/api/channels", {
         method: "POST",
         body: { agentIds },
-        fallback: "Could not start a channel",
+        fallback: "Couldn't start a conversation.",
       });
       return ((await response.json()) as { channel: AgentChannel }).channel;
     },
@@ -55,6 +56,27 @@ export function recordChannelActivityMutationOptions() {
   });
 }
 
+/**
+ * Tell the roster this channel is (or is no longer) running a turn.
+ *
+ * Fire-and-forget, like recorded activity: a working indicator that fails to appear or to clear is
+ * worth nothing next to the run itself, and a person is never shown an error for it. The server
+ * broadcasts it to the channel's members, so the row shows a working dot even on a tab that has
+ * navigated elsewhere.
+ *
+ * A plain function, not a mutation handle: the turn it reports on outlives the screen that started
+ * it, and `mutate` on an unmounted component is a no-op.
+ */
+export async function setChannelBusy(variables: {
+  channelId: string;
+  busy: boolean;
+}) {
+  await tryClient(`/api/channels/${variables.channelId}/busy`, {
+    method: "POST",
+    body: { busy: variables.busy },
+  });
+}
+
 /** Pin or unpin a channel for this member. A marker, not a reorder, so no optimistic sort. */
 export function setChannelPinnedMutationOptions(queryClient: QueryClient) {
   return mutationOptions({
@@ -62,7 +84,7 @@ export function setChannelPinnedMutationOptions(queryClient: QueryClient) {
       await client(`/api/channels/${variables.channelId}/pin`, {
         method: "PUT",
         body: { pinned: variables.pinned },
-        fallback: "Could not pin this channel",
+        fallback: "Couldn't pin this conversation.",
       });
     },
     onSuccess: () =>
@@ -74,18 +96,22 @@ export function setChannelPinnedMutationOptions(queryClient: QueryClient) {
  * Stamp a channel read for this member, patching the cache before the wire answers.
  *
  * Patched in onMutate rather than refetched on success: the dot must clear the instant the channel
- * opens, not a round-trip later. No rollback on failure and no invalidation — a mark-read that did
- * not land is a dot that returns on the next refetch, which is the truth reasserting itself, and a
- * refetch here would race the socket's own patches for nothing.
+ * opens, not a round-trip later. No rollback on failure and no roster invalidation — a mark-read
+ * that did not land is a dot that returns on the next refetch, which is the truth reasserting
+ * itself, and a roster refetch here would race the socket's own patches for nothing. The Bots
+ * badge counts unread on the server, so once the mark lands its count is asked for again rather
+ * than left lit until its next poll.
  */
 export function markChannelReadMutationOptions(queryClient: QueryClient) {
   return mutationOptions({
     mutationFn: async (channelId: string) => {
       await client(`/api/channels/${channelId}/read`, {
         method: "PUT",
-        fallback: "Could not mark this channel read",
+        fallback: "Couldn't mark this conversation as read.",
       });
     },
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: botLifecycleKeys.attention }),
     onMutate: (channelId) => {
       const now = new Date().toISOString();
       queryClient.setQueryData(
@@ -124,7 +150,7 @@ export function deleteChannelMutationOptions(queryClient: QueryClient) {
     mutationFn: async (channelId: string) => {
       await client(`/api/channels/${channelId}`, {
         method: "DELETE",
-        fallback: "Could not delete this channel",
+        fallback: "Couldn't delete this conversation.",
       });
     },
     // The roster only. The open channel's detail query would refetch into the fresh 404 and

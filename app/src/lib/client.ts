@@ -20,7 +20,7 @@ export type ClientOptions = {
   /**
    * What a person reads when the server sent no message of its own.
    *
-   * Name the entity in it — "Could not load coworkers" rather than "Request failed" — because this
+   * Name the entity in it — "Couldn't load your Bots." rather than "Request failed" — because this
    * is the sentence that reaches the screen when the server is the one that broke.
    */
   fallback?: string;
@@ -98,5 +98,11 @@ export async function client<T>(
 
   if (key === undefined) return response;
 
-  return ((await response.json()) as Record<string, T>)[key];
+  // A 204 or a non-JSON body used to throw a bare SyntaxError, and `null` or an array body threw
+  // a TypeError on property access. Malformed success is a failed request with the fallback.
+  const body = (await response.json().catch(() => null)) as unknown;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error(options.fallback ?? "That request failed.");
+  }
+  return (body as Record<string, T>)[key];
 }

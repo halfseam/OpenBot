@@ -5,7 +5,8 @@ import type {
   ChannelActivity,
   ChannelStore,
 } from "../src/channels/routes";
-import { createRoutineRunner, type TurnRunner } from "../src/routines/runner";
+import type { TurnRunner } from "@openbot/toolkit/run-turn";
+import { createRoutineRunner } from "../src/routines/runner";
 import type {
   RoutineRunContext,
   RoutineRunOutcome,
@@ -150,6 +151,8 @@ describe("createRoutineRunner", () => {
     expect(recorded.turns).toEqual([
       {
         ownerUserId: CONTEXT.ownerUserId,
+        // Carried so the turn's audit rows say a routine ran this, not that the owner did.
+        routineId: CONTEXT.routineId,
         agentId: CONTEXT.agentId,
         threadId: CHANNEL.threadId,
         instruction: CONTEXT.instruction,

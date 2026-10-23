@@ -1,8 +1,8 @@
 import {
   IconBolt,
   IconBox,
-  IconClock,
   IconLogout,
+  IconPlug,
   IconPlus,
   IconSearch,
   IconSettings,
@@ -22,7 +22,7 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type * as React from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,9 +55,15 @@ import { useChannelEvents } from "@/lib/channels/use-channel-events";
 import { appConfig } from "@/lib/generated/application-config";
 import { EASE_OUT, ENTRANCE_SECONDS } from "@/lib/motion";
 import { relativeTime } from "@/lib/relative-time";
+import {
+  type MessageListEmphasis,
+  useMessageListEmphasis,
+} from "@/lib/settings/message-list";
+import { BotsNavBadge } from "../bot-profile/attention";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Channel } from "./channel";
+import { ChannelPagination } from "./channel-pagination";
 
 const appLinkOptions = { to: "/" } satisfies LinkOptions;
 const adminLinkOptions = { to: "/admin" } satisfies LinkOptions;
@@ -90,15 +96,16 @@ const MAX_ANIMATED_ROWS = 60;
 /**
  * The roster, narrowed to what the person typed.
  *
- * Matches the channel's name and the last thing said in it, because those are the two things the
- * row actually shows — searching against something invisible returns results a person cannot
- * account for. Message history beyond the last line is not here to search: it lives in the thread
- * store, and reaching for it is a server endpoint rather than a filter.
+ * Matches the channel's name, its summary, and the last message, because those are the things the
+ * row can actually show — searching against something invisible returns results a person cannot
+ * account for. The last message is included because it is still what the second line draws until the
+ * conversation has been named. Message history beyond that line is not here to search: it lives in
+ * the thread store, and reaching for it is a server endpoint rather than a filter.
  *
  * An empty query returns the input array unchanged rather than a copy, so typing and clearing does
  * not hand `AnimatePresence` a new array identity and restage the whole list.
  */
-function matchingChannels(
+export function matchingChannels(
   channels: ChannelSummary[] | undefined,
   query: string,
 ): ChannelSummary[] {
@@ -110,7 +117,7 @@ function matchingChannels(
     return channels;
   }
   return channels.filter((channel) =>
-    [channel.name, channel.lastMessage].some((field) =>
+    [channel.name, channel.summary, channel.lastMessage].some((field) =>
       field?.toLowerCase().includes(needle),
     ),
   );
@@ -164,9 +171,11 @@ export function isUnread(
 function ChannelRow({
   channel,
   animateOrder,
+  emphasis,
 }: {
   channel: ChannelSummary;
   animateOrder: boolean;
+  emphasis: MessageListEmphasis;
 }) {
   const shouldReduceMotion = useReducedMotion();
   // Whether this row is unread, as a boolean, for the same reason `Channel` computes `isOpen`
@@ -188,9 +197,11 @@ function ChannelRow({
       transition={{ duration: ENTRANCE_SECONDS, ease: EASE_OUT }}
     >
       <Channel
+        emphasis={emphasis}
         channelId={channel.id}
         participantIds={channel.agentIds}
         name={channel.name}
+        summary={channel.summary ?? undefined}
         lastMessage={channel.lastMessage ?? undefined}
         lastMessageAt={
           channel.lastMessageAt
@@ -199,12 +210,14 @@ function ChannelRow({
         }
         pinned={channel.pinned}
         unread={unread}
+        busy={channel.busy ?? false}
       />
     </motion.div>
   );
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const emphasis = useMessageListEmphasis();
   const { data: currentUser } = useQuery(currentUserQueryOptions());
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -213,6 +226,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   // One socket for the app, opened where the roster is kept live.
   useChannelEvents();
   const [search, setSearch] = useState("");
+  const scrollRoot = useRef<HTMLDivElement>(null);
   const searching = search.trim().length > 0;
   const visibleChannels = pinnedFirst(matchingChannels(channels.data, search));
   /*
@@ -243,6 +257,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               )}
             />
             <Button
+              aria-label="New conversation"
               size="icon"
               variant="ghost"
               render={(props) => (
@@ -260,15 +275,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarContent className="scroll-fade-b">
+      <SidebarContent ref={scrollRoot} className="scroll-fade-b">
         <SidebarMenu>
           <SidebarGroup className="gap-px">
             <SidebarMenuItem>
               <InputGroup className="bg-background text-sm rounded-lg h-9">
                 <InputGroupInput
-                  aria-label="Buscar canais"
+                  aria-label="Search conversations"
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Buscar..."
+                  placeholder="Search…"
                   value={search}
                 />
                 <InputGroupAddon>
@@ -287,9 +302,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <div className="py-4">
                 <Empty className="border border-dashed min-h-[40dvh]">
                   <EmptyHeader>
-                    <EmptyTitle>Nenhum canal encontrado</EmptyTitle>
+                    <EmptyTitle>
+                      {channels.hasNextPage
+                        ? "No loaded conversations match your search"
+                        : "No conversations match your search"}
+                    </EmptyTitle>
                     <EmptyDescription className="text-pretty">
-                      Nenhum canal corresponde a “{search.trim()}”.
+                      {channels.hasNextPage
+                        ? "Load older conversations to search more of your history."
+                        : `No conversation has “${search.trim()}” in its name or latest message.`}
                     </EmptyDescription>
                   </EmptyHeader>
                 </Empty>
@@ -299,9 +320,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <div className="py-4">
                 <Empty className="border border-dashed min-h-[40dvh]">
                   <EmptyHeader>
-                    <EmptyTitle>Você ainda não tem canais</EmptyTitle>
+                    <EmptyTitle>No conversations yet</EmptyTitle>
                     <EmptyDescription className="text-pretty">
-                      Comece a conversar com os agentes e seus canais aparecerão aqui.
+                      Start a conversation with a Bot and it shows up here.
                     </EmptyDescription>
                   </EmptyHeader>
                 </Empty>
@@ -310,25 +331,54 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <AnimatePresence initial={false}>
               {visibleChannels.map((channel) => (
                 <ChannelRow
+                  emphasis={emphasis}
                   key={channel.id}
                   animateOrder={animateOrder}
                   channel={channel}
                 />
               ))}
             </AnimatePresence>
+            <ChannelPagination
+              query={channels}
+              scrollRoot={scrollRoot}
+              searching={searching}
+            />
           </SidebarGroup>
         </SidebarMenu>
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu className="gap-px">
           <SidebarMenuItem>
-            {/* Beside Agents rather than inside Admin: writing a skill is something anybody does. */}
             <SidebarMenuButton
               className="hover:bg-foreground/5 h-10"
               render={(props) => (
                 <Link
                   {...props}
-                  to="/skills"
+                  to="/bots"
+                  activeProps={{ className: "bg-foreground/5" }}
+                />
+              )}
+            >
+              <div className="size-[28px] flex items-center justify-center">
+                <IconBolt />
+              </div>
+              <span className="text-sm">Bots</span>
+              {/* What waits on you across every Bot; Bots lists them first. */}
+              <BotsNavBadge />
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {/*
+           * Beside Bots rather than inside Admin: each is somebody's own. Capabilities are your skills
+           * and what your Bots remember about you; Connections are the apps a Bot reaches as you.
+           * Capabilities links to `/capabilities` rather than a tab, so it stays lit on both tabs.
+           */}
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              className="hover:bg-foreground/5 h-10"
+              render={(props) => (
+                <Link
+                  {...props}
+                  to="/capabilities"
                   activeProps={{
                     className: "bg-foreground/5",
                   }}
@@ -338,7 +388,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               <div className="size-[28px] flex items-center justify-center">
                 <IconBox />
               </div>
-              <span className="text-sm trackint-tight">Habilidades</span>
+              <span className="text-sm trackint-tight">Capabilities</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
@@ -347,7 +397,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               render={(props) => (
                 <Link
                   {...props}
-                  to="/agents"
+                  to="/connections"
                   activeProps={{
                     className: "bg-foreground/5",
                   }}
@@ -355,29 +405,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               )}
             >
               <div className="size-[28px] flex items-center justify-center">
-                <IconBolt />
+                <IconPlug />
               </div>
-              <span className="text-sm trackint-tight">Agentes</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            {/* Beside Skills and Agents rather than inside Admin: a routine is something anybody has. */}
-            <SidebarMenuButton
-              className="hover:bg-foreground/5 h-10"
-              render={(props) => (
-                <Link
-                  {...props}
-                  to="/routines"
-                  activeProps={{
-                    className: "bg-foreground/5",
-                  }}
-                />
-              )}
-            >
-              <div className="size-[28px] flex items-center justify-center">
-                <IconClock />
-              </div>
-              <span className="text-sm trackint-tight">Rotinas</span>
+              <span className="text-sm trackint-tight">Connections</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
@@ -422,7 +452,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   variant="destructive"
                 >
                   <IconLogout />
-                  Sair
+                  Sign out
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
