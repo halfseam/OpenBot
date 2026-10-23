@@ -104,7 +104,7 @@ describe("computer fleet listing", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: "Administrator access required.",
+      error: "Only an admin can do this.",
     });
     // Refused before the gateway is asked: a check that runs after the fleet has been read is not a
     // check, it is a filter on the response.
@@ -198,7 +198,7 @@ describe("human input", () => {
 
   test("a body naming its own kind cannot reach the shell either", async () => {
     const { calls } = await send(
-      { kind: "../exec", command: "cat /workspace/notes" },
+      { kind: "../exec", text: "cat /workspace/notes" },
       "type",
     );
 

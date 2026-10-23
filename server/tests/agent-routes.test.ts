@@ -15,6 +15,7 @@ import { createAgentRoutes, parseAgentInput } from "../src/agents/routes";
 import { createApp } from "../src/app";
 import type { AppVariables, AuthenticatedActor } from "../src/auth/guards";
 import { loadConfig } from "../src/config";
+import type { SharedUseStore } from "../src/plugins/shared-use-store";
 import { testEnvironment } from "./support/environment";
 
 const actor = {
@@ -42,6 +43,7 @@ function profile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     ownerUserId: actor.id,
     systemOwned: false,
     hidden: false,
+    pinned: false,
     deletedAt: null,
     ...overrides,
   };
@@ -80,6 +82,9 @@ function fakeStore(
     },
     async setHidden(receivedActor, id, hidden) {
       calls.push(["setHidden", receivedActor, id, hidden]);
+    },
+    async setPinned(receivedActor, id, pinned) {
+      calls.push(["setPinned", receivedActor, id, pinned]);
     },
     async softDelete(receivedActor, id) {
       calls.push(["softDelete", receivedActor, id]);
@@ -137,22 +142,22 @@ describe("agent input parser", () => {
     [
       "roleDescription",
       undefined,
-      "Role description must be text between 1 and 1000 characters.",
+      "What it does must be text between 1 and 1000 characters.",
     ],
     [
       "roleDescription",
       {},
-      "Role description must be text between 1 and 1000 characters.",
+      "What it does must be text between 1 and 1000 characters.",
     ],
     [
       "roleDescription",
       "   ",
-      "Role description must be text between 1 and 1000 characters.",
+      "What it does must be text between 1 and 1000 characters.",
     ],
     [
       "roleDescription",
       "r".repeat(1001),
-      "Role description must be text between 1 and 1000 characters.",
+      "What it does must be text between 1 and 1000 characters.",
     ],
     ["visibility", undefined, "Visibility must be public or private."],
     ["visibility", 1, "Visibility must be public or private."],
@@ -289,6 +294,12 @@ describe("agent lifecycle routes", () => {
     const unhidden = await app.request("http://openbot.test/agent-1/unhide", {
       method: "POST",
     });
+    const pinned = await app.request("http://openbot.test/agent-1/pin", {
+      method: "POST",
+    });
+    const unpinned = await app.request("http://openbot.test/agent-1/unpin", {
+      method: "POST",
+    });
     const deleted = await app.request("http://openbot.test/agent-1", {
       method: "DELETE",
     });
@@ -300,15 +311,32 @@ describe("agent lifecycle routes", () => {
     expect(duplicated.status).toBe(201);
     expect(hidden.status).toBe(204);
     expect(unhidden.status).toBe(204);
+    expect(pinned.status).toBe(204);
+    expect(unpinned.status).toBe(204);
     expect(deleted.status).toBe(204);
     expect(store.calls).toEqual([
       ["list", actor, false],
       ["get", actor, "agent-1"],
-      ["create", actor, validInput],
+      /*
+       * `create` carries a system prompt and `update` does not, and that difference is the point.
+       * This input names no endpoint, so on a deployment with no Bot in the box the coworker runs
+       * here on its own role description rather than being refused — the form calls the endpoint
+       * optional and it now is. `update` is deliberately untouched: changing an existing Bot's type
+       * is a different act and must not happen through the edit path.
+       *
+       * The other create in this file passes an endpoint and correctly gets no prompt.
+       */
+      [
+        "create",
+        actor,
+        { ...validInput, systemPrompt: validInput.roleDescription },
+      ],
       ["update", actor, "agent-1", validInput],
       ["duplicate", actor, "agent-1"],
       ["setHidden", actor, "agent-1", true],
       ["setHidden", actor, "agent-1", false],
+      ["setPinned", actor, "agent-1", true],
+      ["setPinned", actor, "agent-1", false],
       ["softDelete", actor, "agent-1"],
     ]);
   });
@@ -339,11 +367,14 @@ describe("agent lifecycle routes", () => {
           title: validInput.title,
           roleDescription: validInput.roleDescription,
           avatarSeed: "expense-manager",
+          assignedToMe: false,
           visibility: "private",
           hidden: false,
+          pinned: false,
           systemOwned: false,
           canManage: true,
           mine: true,
+          builtIn: false,
         },
         {
           id: "agent-2",
@@ -351,11 +382,14 @@ describe("agent lifecycle routes", () => {
           title: validInput.title,
           roleDescription: validInput.roleDescription,
           avatarSeed: "expense-manager",
+          assignedToMe: false,
           visibility: "private",
           hidden: false,
+          pinned: false,
           systemOwned: false,
           canManage: false,
           mine: false,
+          builtIn: false,
         },
         {
           id: "system-agent",
@@ -363,11 +397,14 @@ describe("agent lifecycle routes", () => {
           title: validInput.title,
           roleDescription: validInput.roleDescription,
           avatarSeed: "expense-manager",
+          assignedToMe: false,
           visibility: "public",
           hidden: false,
+          pinned: false,
           systemOwned: true,
           canManage: false,
           mine: false,
+          builtIn: false,
         },
       ],
     });
@@ -480,20 +517,16 @@ describe("agent lifecycle routes", () => {
     const response = await appFor(store).request("http://openbot.test/missing");
 
     expect(response.status).toBe(404);
-    expect(await json(response)).toEqual({ error: "Agent not found." });
+    expect(await json(response)).toEqual({ error: "Couldn't find that Bot." });
   });
 
   test.each([
-    [new AgentNotFoundError("agent-1"), 404, "Agent not found."],
-    [
-      new AgentNotManageableError("agent-1"),
-      403,
-      "You do not have permission to manage this agent.",
-    ],
+    [new AgentNotFoundError("agent-1"), 404, "Couldn't find that Bot."],
+    [new AgentNotManageableError("agent-1"), 403, "You can't manage this Bot."],
     [
       new ProtectedAgentError("agent-1"),
       403,
-      "System-owned agents are protected.",
+      "This Bot is built in and can't be changed.",
     ],
   ])("maps known store errors", async (error, status, message) => {
     const store = fakeStore({
@@ -662,6 +695,8 @@ describe("which Bots a Bot may hand work to", () => {
       enabled: true,
       canGrant: true,
       reachable: ["knowledge"],
+      // No canHandOn reader was wired, and a Bot nothing can vouch for is not offered grants.
+      grantable: false,
     });
   });
 
@@ -720,4 +755,45 @@ describe("which Bots a Bot may hand work to", () => {
 
     expect(response.status).toBe(404);
   });
+});
+
+/*
+ * Publishing is the owner's call, but a wider audience can outrun what an administrator approved
+ * for a shared account this Bot already holds. A non-admin owner who makes their Bot public is
+ * told what that gap is here, rather than finding out on the first call a stranger makes that the
+ * approval does not cover.
+ */
+test("agents: making a Bot public that uses a shared app says what needs approval", async () => {
+  const store = fakeStore();
+  const sharedUse = {
+    shortfall: async () => [{ serverId: "gh", title: "Team GitHub" }],
+  } as unknown as SharedUseStore;
+  const app = new Hono<{ Variables: AppVariables }>();
+  app.route(
+    "/",
+    createAgentRoutes(
+      store,
+      requireUser,
+      false,
+      undefined,
+      new Set(),
+      undefined,
+      false,
+      undefined,
+      sharedUse,
+    ),
+  );
+
+  const response = await app.request("http://openbot.test/agent-1", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...validInput, visibility: "public" }),
+  });
+
+  const body = (await json(response)) as {
+    sharedApps: { needsApproval: { serverId: string; title: string }[] };
+  };
+  expect(body.sharedApps.needsApproval).toEqual([
+    { serverId: "gh", title: "Team GitHub" },
+  ]);
 });

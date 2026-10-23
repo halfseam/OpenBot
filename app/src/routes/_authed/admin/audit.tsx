@@ -1,4 +1,4 @@
-import { IconRefresh } from "@tabler/icons-react";
+import { IconDownload, IconRefresh } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
@@ -9,8 +9,15 @@ import {
 } from "@/components/layout/page-shell";
 import { Button } from "@/components/ui/button";
 import { useBotNames } from "@/lib/agents/bot-names";
-import { auditEventsQueryOptions } from "@/lib/audit/queries";
+import {
+  DID_NOT_HAPPEN_EVENT_TYPES,
+  eventTypeFilter,
+  outcomeOf,
+  REFUSED_EVENT_TYPES,
+} from "@/lib/audit/outcome";
+import { auditEventsQueryOptions, auditExportUrl } from "@/lib/audit/queries";
 import { silenceOf } from "@/lib/audit/silence";
+import { client } from "@/lib/client";
 
 /**
  * Read surface for policy, computer, component, MCP, and credential audit events.
@@ -23,6 +30,9 @@ export const Route = createFileRoute("/_authed/admin/audit")({
 type AuditEvent = {
   id: string;
   actorUserId: string | null;
+  /** Absent on a deployment that has not migrated yet. */
+  initiatorKind?: string;
+  initiatorId?: string | null;
   eventType: string;
   targetType: string;
   targetId: string | null;
@@ -30,32 +40,25 @@ type AuditEvent = {
   createdAt: string;
 };
 
+/*
+ * The saved views, built from the same lists the row label and colour are decided by.
+ *
+ * Written out by hand here and again below, they had already drifted: a refusal on one list and not
+ * the other is a row drawn as "Allowed" or a row missing from the view somebody clicks to ask what
+ * this deployment refused. See `@/lib/audit/outcome`, which is now the only place either question is
+ * answered.
+ */
 const FILTERS = [
   { label: "Everything", search: "" },
   { label: "Computer actions", search: "?eventType=computer.action_allowed" },
-  {
-    label: "Blocked",
-    /*
-     * Include every refusal family, not only browser policy refusals.
-     *
-     * `mcp.callback_refused` is here because it is a refusal, even though nothing about a Bot was
-     * judged: a caller could not prove which Bot it was. Somebody filtering for what this deployment
-     * turned away wants that in the list, and it is the one refusal with no policy behind it, so
-     * leaving it out would hide the only evidence that anything was attempted.
-     *
-     * `routines.dispatch_refused` is the same shape one boundary over: the worker, not a Bot, and a
-     * stale or missing secret rather than a policy decision. The same reasoning that put
-     * `mcp.callback_refused` here applies unchanged — nobody was judged, something was still turned
-     * away, and the saved view a person clicks for "what did this deployment block" should show it.
-     */
-    search:
-      "?eventType=computer.action_refused,mcp.call_rejected,mcp.callback_refused,component.refused,component.function_refused,routines.dispatch_refused",
-  },
+  { label: "Blocked", search: eventTypeFilter(REFUSED_EVENT_TYPES) },
   {
     label: "Did not happen",
-    // A stalled stream belongs here. It is the same complaint as an action that was allowed and then
-    // did not take: nothing was refused, and nothing came of it either.
-    search: "?eventType=computer.action_failed,agent.stream_stalled",
+    search: eventTypeFilter(DID_NOT_HAPPEN_EVENT_TYPES),
+  },
+  {
+    label: "Nobody watching",
+    search: "?initiatorKind=routine,handoff,responsibility,memory",
   },
 ] as const;
 
@@ -64,6 +67,46 @@ function AuditPage() {
   const events = useQuery(auditEventsQueryOptions(search));
   const rows = (events.data?.events ?? []) as AuditEvent[];
   const nameFor = useBotNames();
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportCapped, setExportCapped] = useState<number | null>(null);
+
+  /*
+   * The same filtered query as the table, downloaded as a file. The server walks every
+   * matching page up to its cap, so this stays a single request no matter how many pages
+   * the filter matches; the filename carries the day it was pulled.
+   */
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting(true);
+    setExportError(null);
+    setExportCapped(null);
+    try {
+      const response = await client(auditExportUrl(search), {
+        fallback: "Couldn't export audit events. Try again.",
+      });
+      // A file that stopped early must say so, or it reads as the whole trail.
+      const capped = Number(response.headers.get("x-audit-export-truncated"));
+      if (Number.isInteger(capped) && capped > 0) setExportCapped(capped);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `audit-events-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setExportError(
+        error instanceof Error
+          ? error.message
+          : "Couldn't export audit events. Try again.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
     /*
@@ -74,10 +117,21 @@ function AuditPage() {
      */
     <PageShell
       action={
-        <Button onClick={() => events.refetch()} size="sm" variant="ghost">
-          <IconRefresh />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            disabled={exporting}
+            onClick={exportCsv}
+            size="sm"
+            variant="outline"
+          >
+            <IconDownload />
+            {exporting ? "Exporting…" : "Export CSV"}
+          </Button>
+          <Button onClick={() => events.refetch()} size="sm" variant="ghost">
+            <IconRefresh />
+            Refresh
+          </Button>
+        </div>
       }
       description="Every action a Bot took, and every one this deployment's policy refused."
       title="Audit"
@@ -99,9 +153,20 @@ function AuditPage() {
           ))}
         </div>
 
+        {exportError ? (
+          <p className="mt-4 text-destructive text-sm" role="alert">
+            {exportError}
+          </p>
+        ) : null}
+        {exportCapped ? (
+          <p className="mt-4 text-muted-foreground text-sm" role="status">
+            The file has the newest {exportCapped.toLocaleString()} events, not
+            all of them. Narrow the filter or dates to export the rest.
+          </p>
+        ) : null}
         {events.isPending ? null : events.isError ? (
           <p className="mt-4 text-destructive text-sm" role="alert">
-            The audit trail could not be loaded.
+            Couldn't load the audit log. Reload the page.
           </p>
         ) : rows.length === 0 ? (
           <PageEmpty>No events match this filter yet.</PageEmpty>
@@ -114,6 +179,7 @@ function AuditPage() {
                   <th className="px-4 py-2 font-medium">What</th>
                   <th className="px-4 py-2 font-medium">On</th>
                   <th className="px-4 py-2 font-medium">Bot</th>
+                  <th className="px-4 py-2 font-medium">Started by</th>
                   <th className="px-4 py-2 font-medium">Decision</th>
                 </tr>
               </thead>
@@ -128,6 +194,56 @@ function AuditPage() {
       </PageSection>
     </PageShell>
   );
+}
+
+function StartedBy({
+  event,
+  nameFor,
+}: {
+  event: AuditEvent;
+  nameFor: (botId: string) => string;
+}) {
+  if (event.initiatorKind === "routine") {
+    return (
+      <span
+        className="font-medium text-amber-600 dark:text-amber-500"
+        title={event.initiatorId ?? undefined}
+      >
+        A routine
+      </span>
+    );
+  }
+  if (event.initiatorKind === "handoff") {
+    return (
+      <span
+        className="font-medium text-amber-600 dark:text-amber-500"
+        title={event.initiatorId ?? undefined}
+      >
+        {event.initiatorId
+          ? `Handed on by ${nameFor(event.initiatorId)}`
+          : "Handed on"}
+      </span>
+    );
+  }
+  if (
+    event.initiatorKind === "responsibility" ||
+    event.initiatorKind === "memory"
+  ) {
+    return (
+      <span
+        className="font-medium text-amber-600 dark:text-amber-500"
+        title={event.initiatorId ?? undefined}
+      >
+        {event.initiatorKind === "memory"
+          ? "A memory source"
+          : "A responsibility"}
+      </span>
+    );
+  }
+  if (event.initiatorKind === "deployment") {
+    return <span className="text-muted-foreground">This deployment</span>;
+  }
+  return <span className="text-muted-foreground">A person</span>;
 }
 
 function Row({
@@ -148,19 +264,8 @@ function Row({
     | { role?: string; name?: string }
     | string
     | undefined;
-  const refused =
-    event.eventType === "computer.action_refused" ||
-    event.eventType === "component.refused" ||
-    event.eventType === "component.function_refused" ||
-    event.eventType === "mcp.call_rejected" ||
-    /*
-     * A caller that could not prove which Bot it was. Refused like the others, and it has to read
-     * that way here: the fallback below calls anything it does not recognise "Allowed", which for a
-     * refusal is the one wrong answer. A trail that is confidently wrong is worse than a silent one.
-     */
-    event.eventType === "mcp.callback_refused" ||
-    // The worker turned away at the door, same reasoning as the caller above.
-    event.eventType === "routines.dispatch_refused";
+  const outcome = outcomeOf(event.eventType);
+  const refused = outcome === "refused";
   const stalled = event.eventType === "agent.stream_stalled";
   /*
    * Three different things, and the difference is what somebody comes to this row to find out.
@@ -173,15 +278,15 @@ function Row({
   const routed =
     event.eventType === "channel.routed"
       ? payload.viaMention === true
-        ? "The person chose this coworker"
+        ? "The person chose this Bot"
         : payload.fallback === true
-          ? "Sent to the default coworker"
-          : "Sent to the coworker it is for"
+          ? "Sent to the default Bot"
+          : "Sent to the Bot it was meant for"
       : null;
   // Allowed by policy but not carried out. A stalled turn belongs in the same family: the Bot was
   // asked and the answer never arrived. Colour is how this table is read, and a row left in the
   // muted foreground reads as "Allowed", which a turn nobody ever got an answer to was not.
-  const failed = event.eventType === "computer.action_failed" || stalled;
+  const failed = outcome === "did-not-happen";
   const silence = stalled ? silenceOf(payload) : null;
 
   return (
@@ -262,6 +367,9 @@ function Row({
         ) : (
           "-"
         )}
+      </td>
+      <td className="px-4 py-2">
+        <StartedBy event={event} nameFor={nameFor} />
       </td>
       <td className="px-4 py-2">
         <span
@@ -350,7 +458,9 @@ function Row({
             {decision.rule}
           </div>
         ) : null}
-        {decision.mode === "dry-run" && decision.carriedOut ? (
+        {decision.mode === "dry-run" &&
+        decision.allowed === false &&
+        decision.carriedOut ? (
           <div className="text-xs text-muted-foreground">
             dry-run: recorded, not enforced
           </div>
@@ -375,7 +485,7 @@ function Row({
 const DISCOVERY_REASONS: Record<string, string> = {
   "under-floor": "Few enough tools to offer them all",
   "nothing-declared": "No skill declares any of these tools",
-  unavailable: "Could not choose, so all were offered",
+  unavailable: "Couldn't choose, so all were offered",
   "nothing-chosen": "No skill applied, so all were offered",
   selected: "Chosen by skill",
 };
@@ -395,35 +505,36 @@ const DECISIONS: Record<string, string> = {
   "agent.stream_stalled": "The Bot stopped responding",
   "computer.policy_loaded": "Boundary at start-up",
   "computer.isolation_loaded": "Isolation at start-up",
-  "computer.control_taken": "A person took the wheel",
-  "computer.control_released": "The wheel was handed back",
+  "computer.control_taken": "A person took control",
+  "computer.control_released": "Control went back to the Bot",
   "computer.help_requested": "The Bot asked for help",
   "computer.secret_requested": "The Bot asked for a secret",
   "computer.secret_supplied": "A person supplied a secret",
   "computer.reset": "The computer was reset",
+  "computer.updated": "The computer was updated",
   "computer.stopped": "A person pressed stop",
 
   "component.granted": "Granted to this Bot",
   "component.revoked": "Taken away from this Bot",
-  "component.published": "Published, so every Bot may use it",
-  "component.unpublished": "Unpublished, so no Bot may use it",
+  "component.published": "Published. Every Bot can use it",
+  "component.unpublished": "Unpublished. No Bot can use it",
   "component.draft_saved": "Draft saved, not yet published",
   "component.refused": "Refused",
-  "component.function_granted": "May read this",
-  "component.function_revoked": "May no longer read this",
+  "component.function_granted": "Can read this",
+  "component.function_revoked": "Can no longer read this",
   "component.function_called": "Read real data",
   "component.function_refused": "Refused",
   // A function failure is execution failure, not a policy refusal.
-  "component.function_failed": "Could not be read",
+  "component.function_failed": "Couldn't read it",
 
   // Not a call and not a decision: the tools this run was allowed to see. Worded so nobody reads it
   // as permission, which it is not — everything named was already granted.
   "mcp.tools_discovered": "Tools offered for one run",
   "mcp.call_succeeded": "Called on this Bot's behalf",
   "mcp.call_rejected": "Blocked",
-  "mcp.call_failed": "The server did not answer",
+  "mcp.call_failed": "The server didn't answer",
   // Not "Blocked": nothing about the Bot was judged, because nothing proved which Bot it was.
-  "mcp.callback_refused": "Could not prove which Bot it was",
+  "mcp.callback_refused": "Couldn't confirm which Bot it was",
 
   "configuration.changed": "Configuration changed",
   "credential.created": "Credential saved",

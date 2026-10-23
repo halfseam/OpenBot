@@ -1,28 +1,16 @@
-import { IconPlus } from "@tabler/icons-react";
-import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { z } from "zod";
-import { AgentCard } from "@/components/agents/agent-card";
-import { AgentProfile as AgentProfileDetail } from "@/components/agents/agent-profile";
-import { NewAgent } from "@/components/agents/new-agent";
-import { DetailPanel } from "@/components/layout/detail-panel";
-import { StaggerItem } from "@/components/layout/stagger";
-import { Button } from "@/components/ui/button";
-import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { agentListQueryOptions } from "@/lib/agents/queries";
+import { legacyAgentsTarget } from "@/lib/agents/legacy-routes";
 
-/**
- * Creating and inspecting a coworker are search-parameter states so the roster remains mounted and
- * Back closes the detail pane.
- */
-const agentsSearchSchema = z.object({
-  new: z.boolean().optional(),
-  agent: z.string().optional(),
-});
-
+/** `/agents` was the coworker screen. The Bots roster and each Bot's own page replaced it. */
 export const Route = createFileRoute("/_authed/_app/agents/")({
-  validateSearch: agentsSearchSchema,
-  component: AgentsScreen,
+  validateSearch: z.object({
+    new: z.boolean().optional(),
+    agent: z.string().optional(),
+  }),
+  beforeLoad: ({ search }) => {
+    throw redirect(legacyAgentsTarget(search));
+  },
 });
 
 /*

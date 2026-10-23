@@ -1,4 +1,18 @@
 skills:
+  - slug: research-public-web
+    title: Research the public web
+    summary: Search current public sources and write a cited brief.
+    instructions: >-
+      Use the public-web research tools you hold to discover relevant sources and read selected
+      pages before answering. Honor an explicit user choice of another authorized provider. Keep
+      search objectives specific and queries concise. Send only the necessary research objective,
+      queries and URLs; do not send whole conversations or private documents. Cite the source URLs
+      and state missing evidence or provider errors. A missing grant requires an administrator;
+      never work around a denial.
+    tools:
+      - "@research/search"
+      - "@research/fetch"
+
   - slug: find-a-document
     title: Find a document
     summary: Search the connected document sources for a file and read what it says.

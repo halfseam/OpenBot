@@ -85,6 +85,7 @@ describe("what an unauthenticated caller may reach", () => {
       "/snapshot",
       "/files/list",
       "/files/read",
+      "/files/download",
       "/stream",
       "/live",
       "/",
@@ -119,6 +120,8 @@ describe("what the wheel stops while a person is driving", () => {
       "/scroll",
       "/exec",
       "/files/write",
+      "/sign-in/fill",
+      "/sign-in/code",
     ]) {
       expect(actsOnTheComputer(path)).toBeTrue();
     }

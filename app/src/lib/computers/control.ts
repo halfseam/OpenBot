@@ -11,38 +11,58 @@ import { tryClient } from "@/lib/client";
  * should say nothing, not tear down the screen the person is looking at.
  */
 
-export type ControlState = {
-  holder: "bot" | "human";
-  since: string;
-  reason?: string;
-  requested: boolean;
-  /** What the Bot is waiting for, by name only. Present means show the masked prompt. */
-  secretWanted?: string;
-};
+export type { ComputerControlState as ControlState } from "@openbot/shared/computer-control";
+import type { ComputerControlState as ControlState } from "@openbot/shared/computer-control";
 
 async function callControl(
   computerId: string,
   path: string,
-  method?: string,
+  body?: unknown,
+  signal?: AbortSignal,
 ): Promise<ControlState | null> {
   const response = await tryClient(
-    `/api/computers/${computerId}${path}`,
-    method ? { method } : {},
+    `/api/computers/${encodeURIComponent(computerId)}${path}`,
+    { ...(body === undefined ? {} : { method: "POST", body }), signal },
   );
   if (!response.ok) return null;
-  return (await response.json()) as ControlState;
+  const value: unknown = await response.json().catch(() => null);
+  if (!value || typeof value !== "object" || !("holder" in value)) return null;
+  if (value.holder !== "bot" && value.holder !== "human") return null;
+  return value as ControlState;
 }
 
-export function readControl(computerId: string) {
-  return callControl(computerId, "/control");
+export function readControl(
+  computerId: string,
+  requestId?: string,
+  signal?: AbortSignal,
+) {
+  return callControl(
+    computerId,
+    `/control${requestId ? `?requestId=${encodeURIComponent(requestId)}` : ""}`,
+    undefined,
+    signal,
+  );
 }
 
-export function takeControl(computerId: string) {
-  return callControl(computerId, "/control/take", "POST");
+export async function takeControl(computerId: string, requestId?: string) {
+  const id =
+    requestId ??
+    (
+      await callControl(computerId, "/control/request", {
+        reason: "I want to take control of the browser.",
+      })
+    )?.request?.id;
+  return id
+    ? callControl(computerId, "/control/take", { requestId: id })
+    : null;
 }
 
-export function releaseControl(computerId: string) {
-  return callControl(computerId, "/control/release", "POST");
+export function releaseControl(computerId: string, requestId: string) {
+  return callControl(computerId, "/control/release", { requestId });
+}
+
+export function cancelControl(computerId: string, requestId: string) {
+  return callControl(computerId, "/control/cancel", { requestId });
 }
 
 /**
@@ -64,11 +84,14 @@ export async function supplySecret(
     const body = (await response.json().catch(() => null)) as {
       error?: string;
     } | null;
-    return { ok: false, error: body?.error ?? "That could not be entered." };
+    return {
+      ok: false,
+      error: body?.error ?? "Couldn't type that into the page. Try again.",
+    };
   } catch {
     return {
       ok: false,
-      error: "The assistant's computer could not be reached.",
+      error: "Couldn't reach the Bot's computer. Try again.",
     };
   }
 }

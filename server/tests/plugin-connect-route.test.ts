@@ -40,7 +40,18 @@ function app(store: {
   ) => Promise<OAuthClient | null>;
 }) {
   const routes = createPluginRoutes(
-    store as never,
+    {
+      // The provider these rows belong to, which the routes read rather than guess.
+      brokerProvider: "composio" as const,
+      /*
+       * The read that decides whether this is a brokered row, which the handler makes before
+       * anything about the consent flow. None of these vendors is one: a brokered app is reached
+       * through Composio and enters none of the flow these tests are about. `undefined` is an id
+       * naming no row, which falls through to the flow below exactly as a non-brokered row does.
+       */
+      serverAddress: async () => undefined,
+      ...store,
+    } as never,
     signedIn(),
     async () => true,
     {
@@ -82,7 +93,15 @@ describe("connecting a dynamically registered vendor", () => {
     expect(url.searchParams.get("client_id")).toBe("dyn-1");
   });
 
-  test("a refused registration answers 502, naming the vendor", async () => {
+  /**
+   * One answer for two states, because there is one thing to do about either.
+   *
+   * A vendor that turned this deployment down and a vendor that could not be reached both leave
+   * `ensureOAuthClient` with no client, and the person pressing Connect has the same next step
+   * whichever it was. The sentence says both rather than naming the wrong one confidently; which it
+   * actually was is in the log, where it is of use to somebody who can act on it.
+   */
+  test("a registration that produced no client answers 502, naming the vendor", async () => {
     const ensureCalls: { serverId: string; by: string }[] = [];
     const hono = app({
       oauthClientFor: async () => null,
@@ -101,7 +120,7 @@ describe("connecting a dynamically registered vendor", () => {
     expect(ensureCalls.length).toBe(1);
     const body = (await response.json()) as { error: string };
     expect(body.error).toBe(
-      "Notion refused this deployment's registration. Try again, and check the vendor's status if it persists.",
+      "Couldn't set up Notion. Try again, or check Notion's status if it keeps happening.",
     );
   });
 });
@@ -125,7 +144,9 @@ describe("connecting a manually registered vendor (regression pin)", () => {
     expect(response.status).toBe(409);
     expect(ensureCalls).toEqual([]);
     const body = (await response.json()) as { error: string };
-    expect(body.error).toContain("no OAuth client registered");
+    expect(body.error).toContain(
+      "isn't set up yet. Ask an admin to finish setting it up.",
+    );
   });
 });
 
@@ -155,7 +176,7 @@ describe("connecting a vendor this deployment has not added", () => {
     expect(response.status).toBe(409);
     const body = (await response.json()) as { error: string };
     expect(body.error).toBe(
-      "Notion has not been added to this deployment yet. An administrator has to add it first.",
+      "Notion hasn't been added yet. Ask an admin to add it.",
     );
   });
 });

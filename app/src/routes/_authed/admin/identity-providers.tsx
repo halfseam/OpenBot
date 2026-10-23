@@ -1,7 +1,7 @@
 import { IconBuildingBank, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   PageEmpty,
   PageRows,
@@ -63,6 +63,7 @@ function IdentityProvidersPage() {
   );
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(EMPTY);
+  const formId = useId();
 
   // A removal failure belongs on the page: there is no dialog to put it in. A registration failure
   // is shown inside the dialog instead, where the person who caused it is looking.
@@ -104,11 +105,11 @@ function IdentityProvidersPage() {
           Add a provider
         </Button>
       }
-      description="A company's own identity provider, by SAML or OpenID Connect. Somebody types their email address and the domain decides which one they are sent to."
+      description="Your company's own SAML or OpenID Connect provider. People sign in with their email, and its domain picks the provider."
       title="Identity providers"
     >
       <PageSection
-        description="Google, Microsoft and Okta are configured in the environment instead and do not appear here."
+        description="Google, Microsoft and Okta are set in the environment. They don't show here."
         title="Registered"
       >
         {failure ? (
@@ -118,12 +119,12 @@ function IdentityProvidersPage() {
         ) : null}
         {providers.isPending ? null : providers.error ? (
           <p className="mt-4 text-destructive text-sm" role="alert">
-            Could not load identity providers.
+            Couldn't load identity providers. Reload the page.
           </p>
         ) : providers.data?.length === 0 ? (
           <PageEmpty>
-            No identity providers are registered. Add one with the metadata your
-            identity team supplied.
+            No identity providers yet. Add one with the metadata from your
+            identity team.
           </PageEmpty>
         ) : (
           <PageRows>
@@ -164,8 +165,10 @@ function IdentityProvidersPage() {
           <DialogHeader>
             <DialogTitle>Add an identity provider</DialogTitle>
           </DialogHeader>
-          <form onSubmit={submit}>
-            <DialogBody className="mt-4 space-y-4 overflow-y-auto">
+          <DialogBody className="mt-4 space-y-4 overflow-y-auto">
+            {/* The submit button is in the footer and reaches this form by id, so DialogBody stays a
+                direct child of DialogContent and keeps scrolling. */}
+            <form className="flex flex-col gap-4" id={formId} onSubmit={submit}>
               <div className="flex gap-2">
                 {(["saml", "oidc"] as const).map((protocol) => (
                   <Button
@@ -208,8 +211,8 @@ function IdentityProvidersPage() {
                 />
                 {/* Said out loud because it is the field that decides who this applies to. */}
                 <p className="text-muted-foreground text-xs">
-                  Anybody signing in with an address at this domain is sent
-                  here. Separate several with commas.
+                  Anybody with an address at this domain signs in here. Separate
+                  several with commas.
                 </p>
               </div>
 
@@ -256,8 +259,8 @@ function IdentityProvidersPage() {
                       value={draft.metadata}
                     />
                     <p className="text-muted-foreground text-xs">
-                      The document your identity team supplied. It carries the
-                      signing certificate.
+                      The file from your identity team. It includes the signing
+                      certificate.
                     </p>
                   </div>
                 </>
@@ -288,32 +291,36 @@ function IdentityProvidersPage() {
                   </div>
                 </>
               )}
-
-              {/*
+            </form>
+            {/*
                 Here as well as on the page behind, because while this is open the page behind it is
                 not visible. A registration refused by the identity provider or by Better Auth left
                 the dialog sitting there unchanged, which reads as the button not working.
               */}
-              {register.error ? (
-                <p className="text-destructive text-sm" role="alert">
-                  {register.error.message}
-                </p>
-              ) : null}
-            </DialogBody>
-            <DialogFooter className="mt-4">
-              <Button
-                onClick={() => setOpen(false)}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                Cancel
-              </Button>
-              <Button disabled={register.isPending} size="sm" type="submit">
-                {register.isPending ? "Adding…" : "Add"}
-              </Button>
-            </DialogFooter>
-          </form>
+            {register.error ? (
+              <p className="text-destructive text-sm" role="alert">
+                {register.error.message}
+              </p>
+            ) : null}
+          </DialogBody>
+          <DialogFooter className="mt-4">
+            <Button
+              onClick={() => setOpen(false)}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={register.isPending}
+              form={formId}
+              size="sm"
+              type="submit"
+            >
+              {register.isPending ? "Adding…" : "Add"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </PageShell>

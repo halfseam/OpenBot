@@ -1,3 +1,13 @@
+import { cutAtCodeUnits } from "../channels/text";
+import {
+  callTriggerTool,
+  isTriggerTool,
+  TRIGGER_TOOLS,
+} from "../responsibilities/trigger-tools";
+import {
+  ResponsibilityNotFoundError,
+  ResponsibilityRefusedError,
+} from "../responsibilities/types";
 import {
   MAX_RUN_ERROR,
   type Routine,
@@ -66,7 +76,7 @@ export function useRoutineTools(tools: RoutineTools | null): void {
  * HOW THE INSTRUCTION IS PHRASED IS PART OF THAT CONTRACT, and it was learned the hard way: a
  * routine stored as "Every run, append the current date and time to the Notion page …" fired, and the
  * turn read its own schedule-shaped text as a question about SCHEDULING — it checked that the routine
- * existed, said so, and appended nothing, successfully. `routines/run-turn.ts` now frames the firing
+ * existed, said so, and appended nothing, successfully. `toolkit/run-turn.ts` now frames the firing
  * turn as a firing; this is the other half, so the sentence is written as work to begin with.
  */
 const TOOLS: readonly McpTool[] = Object.freeze([
@@ -238,7 +248,8 @@ type Connection = {
  * belongs to the actor is {@link callTool}'s, where the actor is what authorizes the change.
  */
 export async function listTools(): Promise<McpTool[]> {
-  return TOOLS.map((tool) => ({ ...tool }));
+  // The trigger tools ride this transport so the same catalogue grant governs them.
+  return [...TOOLS, ...TRIGGER_TOOLS].map((tool) => ({ ...tool }));
 }
 
 export const listNeedsCredential = false;
@@ -255,7 +266,7 @@ function asResult(text: string): McpCallResult {
     return { text, isError: false, truncated: false };
   }
   return {
-    text: `${text.slice(0, MAX_RESULT_CHARS)}\n\n[truncated: the tool returned ${text.length} characters]`,
+    text: `${cutAtCodeUnits(text, MAX_RESULT_CHARS)}\n\n[truncated: the tool returned ${text.length} characters]`,
     isError: false,
     truncated: true,
   };
@@ -380,6 +391,22 @@ export async function callTool(
   const agentId = connection.botId?.trim();
   if (!agentId) {
     return failure("A routine runs as a Bot, and this run does not name one.");
+  }
+  if (isTriggerTool(toolName)) {
+    try {
+      return asResult(
+        await callTriggerTool(ownerUserId, agentId, toolName, args),
+      );
+    } catch (error) {
+      if (error instanceof ResponsibilityRefusedError)
+        return failure(error.message);
+      if (error instanceof ResponsibilityNotFoundError)
+        return failure(
+          "There is no trigger or responsibility of yours with that id for me.",
+        );
+      const message = error instanceof Error ? error.message : String(error);
+      return failure(Array.from(message).slice(0, MAX_RUN_ERROR).join(""));
+    }
   }
   const tools = installed;
   if (!tools) {

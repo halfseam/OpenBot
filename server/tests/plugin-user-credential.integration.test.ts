@@ -15,7 +15,7 @@ import {
   users,
 } from "../src/db/schema";
 import { createPluginStore, PluginRefusedError } from "../src/plugins/store";
-import { TEST_POOL } from "./support/database";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 /**
  * Whose credential a call to a `user-oauth` server goes out with.
@@ -31,11 +31,7 @@ import { TEST_POOL } from "./support/database";
  * property: a call with no grant behind it must not leave the building.
  */
 
-const database = createDatabase(
-  process.env.DATABASE_URL ??
-    "postgres://openbot:openbot@localhost:5432/openbot",
-  TEST_POOL,
-);
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
 
 const suite = randomUUID().slice(0, 8);
 const botId = `agent_oauth_bot_${suite}`;
@@ -96,6 +92,7 @@ let toolWasAlreadyAdvertised = false;
 const credentialIds: string[] = [];
 
 const store = createPluginStore({
+  brokerProvider: "composio",
   database,
   auditStore: createAuditStore(database),
   credentials: {
@@ -287,7 +284,12 @@ beforeAll(async () => {
     .onConflictDoNothing();
   await database
     .insert(mcpTools)
-    .values({ serverId, name: toolName, description: "Search files." })
+    .values({
+      serverId,
+      name: toolName,
+      vendorName: toolName,
+      description: "Search files.",
+    })
     .onConflictDoNothing();
 
   // The Bot holds the tool throughout. Everything here is about the person, not the grant.
@@ -421,7 +423,9 @@ describe("a person who has connected", () => {
 
     await expect(
       store.callTool({ ref, args: {}, botId, actorId: askerId }),
-    ).rejects.toThrow(/OAuth client/);
+    ).rejects.toThrow(
+      /isn't set up yet, so this can't be done\. Ask an admin to finish setting it up\./,
+    );
   });
 
   test("goes out with their own token and nobody else's", async () => {
@@ -501,6 +505,54 @@ describe("a person who has connected", () => {
  * session — the session is the half they cannot use, and the token is the half this deployment is
  * still holding. For a per-person connector it is the first thing a customer asks about.
  */
+describe("a connection whose credential no longer works", () => {
+  /*
+   * A ROW IS NOT ACCESS, and the two used to be impossible to tell apart from outside.
+   *
+   * `connectionsFor` reads the join table, which revoking a credential does not touch. Every reader
+   * asking "is this person connected" therefore got "does this person have a row", and the in-chat
+   * connect card drew "connected" over the very refusal telling them their access was withdrawn —
+   * taking away the button that is the only way to get it back.
+   */
+  test("is listed as revoked rather than as connected", async () => {
+    await registerClient();
+    const credentialId = await connect(askerId, askerRefreshToken);
+
+    expect(await store.connectionsFor(askerId)).toMatchObject([
+      { serverId, revoked: false },
+    ]);
+
+    await database
+      .update(credentials)
+      .set({ revokedAt: new Date() })
+      .where(eq(credentials.id, credentialId));
+
+    expect(await store.connectionsFor(askerId)).toMatchObject([
+      { serverId, revoked: true },
+    ]);
+  });
+
+  test("cannot have its credential deleted out from under it", async () => {
+    /*
+     * What makes the join above total, and therefore what makes "revoked" the only way access can
+     * be gone. `credential_id` is a real foreign key that does not cascade, so there is no third
+     * state to report — the database refuses to create one.
+     */
+    await registerClient();
+    const credentialId = await connect(askerId, askerRefreshToken);
+
+    // Awaited inside a real promise: a drizzle query builder is a thenable, not a Promise, and
+    // `rejects` given one asserts against the builder object rather than running the query.
+    await expect(
+      (async () => {
+        await database
+          .delete(credentials)
+          .where(eq(credentials.id, credentialId));
+      })(),
+    ).rejects.toThrow();
+  });
+});
+
 describe("retiring the credentials a person owns", () => {
   /*
    * Counted as a property, not as a number.

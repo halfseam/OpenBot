@@ -51,7 +51,7 @@ describe("server authorization", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: "Administrator access required.",
+      error: "Only an admin can do this.",
     });
   });
 
@@ -70,6 +70,8 @@ describe("server authorization", () => {
         name: "OpenBot Member",
         image: "https://example.test/member.png",
         role: "user",
+        // No store was passed, so this deployment tracks no onboarding and the app gates nobody.
+        onboarding: null,
       },
     });
   });

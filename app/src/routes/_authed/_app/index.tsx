@@ -244,6 +244,6 @@ function RouteComponent() {
           );
         })}
       </div>
-    </div>
+    </>
   );
 }

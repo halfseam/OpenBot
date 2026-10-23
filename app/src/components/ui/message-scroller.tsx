@@ -1,19 +1,19 @@
-import * as React from "react"
+import type * as React from "react";
 import {
   MessageScroller as MessageScrollerPrimitive,
   useMessageScroller,
   useMessageScrollerScrollable,
   useMessageScrollerVisibility,
-} from "@shadcn/react/message-scroller"
+} from "@shadcn/react/message-scroller";
 
-import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { IconArrowDown } from "@tabler/icons-react"
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { IconArrowDown } from "@tabler/icons-react";
 
 function MessageScrollerProvider(
-  props: React.ComponentProps<typeof MessageScrollerPrimitive.Provider>
+  props: React.ComponentProps<typeof MessageScrollerPrimitive.Provider>,
 ) {
-  return <MessageScrollerPrimitive.Provider {...props} />
+  return <MessageScrollerPrimitive.Provider {...props} />;
 }
 
 function MessageScroller({
@@ -25,27 +25,32 @@ function MessageScroller({
       data-slot="message-scroller"
       className={cn(
         "group/message-scroller relative flex size-full min-h-0 flex-col overflow-hidden",
-        className
+        className,
       )}
       {...props}
     />
-  )
+  );
 }
 
 function MessageScrollerViewport({
   className,
+  tabIndex,
   ...props
 }: React.ComponentProps<typeof MessageScrollerPrimitive.Viewport>) {
+  // The primitive is always a tab stop so the keyboard can scroll it. One with nothing to scroll,
+  // like a conversation that has not started, is a stop between the To: field and the composer.
+  const scrollable = useMessageScrollerScrollable();
   return (
     <MessageScrollerPrimitive.Viewport
       data-slot="message-scroller-viewport"
+      tabIndex={tabIndex ?? (scrollable.start || scrollable.end ? 0 : -1)}
       className={cn(
         "size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content data-autoscrolling:scrollbar-thumb-transparent data-autoscrolling:scrollbar-track-transparent",
-        className
+        className,
       )}
       {...props}
     />
-  )
+  );
 }
 
 function MessageScrollerContent({
@@ -58,7 +63,7 @@ function MessageScrollerContent({
       className={cn("flex h-max min-h-full flex-col gap-6", className)}
       {...props}
     />
-  )
+  );
 }
 
 function MessageScrollerItem({
@@ -74,11 +79,11 @@ function MessageScrollerItem({
         // Do not use `content-visibility: auto`: short transcripts can reserve item height without
         // painting the message until a scroll/resize forces it.
         "min-w-0 shrink-0",
-        className
+        className,
       )}
       {...props}
     />
-  )
+  );
 }
 
 function MessageScrollerButton({
@@ -100,22 +105,21 @@ function MessageScrollerButton({
       direction={direction}
       className={cn(
         "absolute inset-s-1/2 -translate-x-1/2 border-border bg-background text-foreground transition-[translate,scale,opacity] duration-200 hover:bg-muted hover:text-foreground data-[active=false]:pointer-events-none data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)] data-[direction=end]:bottom-4 data-[direction=end]:data-[active=false]:translate-y-full data-[direction=start]:top-4 data-[direction=start]:data-[active=false]:-translate-y-full rtl:translate-x-1/2 data-[direction=start]:[&_svg]:rotate-180",
-        className
+        className,
       )}
       render={render ?? <Button variant={variant} size={size} />}
       {...props}
     >
       {children ?? (
         <>
-          <IconArrowDown
-          />
+          <IconArrowDown />
           <span className="sr-only">
             {direction === "end" ? "Scroll to end" : "Scroll to start"}
           </span>
         </>
       )}
     </MessageScrollerPrimitive.Button>
-  )
+  );
 }
 
 export {
@@ -128,4 +132,4 @@ export {
   useMessageScroller,
   useMessageScrollerScrollable,
   useMessageScrollerVisibility,
-}
+};

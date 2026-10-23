@@ -1,7 +1,9 @@
 import {
   IconArrowLeft,
+  IconBell,
+  IconChecks,
+  IconKey,
   IconLayoutGrid,
-  IconPlug,
   IconSettings,
 } from "@tabler/icons-react";
 import { Link, type LinkOptions } from "@tanstack/react-router";

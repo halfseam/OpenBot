@@ -182,6 +182,12 @@ describe("describeCron", () => {
     expect(describeCron("0,30 9 * * *")).toBe("Every day at 09:00 and 09:30");
   });
 
+  // cron fires once per distinct minute, so a repeated minute must not be described twice.
+  test("a repeated minute in the list is described once", () => {
+    expect(describeCron("0,30,0 9 * * *")).toBe("Every day at 09:00 and 09:30");
+    expect(describeCron("15,15 9 * * *")).toBe("Every day at 09:15");
+  });
+
   test("falls through to the raw expression when it is stranger than words", () => {
     expect(describeCron("*/7 3,4 * * *")).toBe("*/7 3,4 * * *");
   });
@@ -192,6 +198,34 @@ describe("describeCron", () => {
   // teaches `describeCron` this shape, that is a deliberate extension, not a bug fix.
   test("falls through to the raw expression for an hour list, by design", () => {
     expect(describeCron("0 9,17 * * *")).toBe("0 9,17 * * *");
+  });
+
+  /*
+   * Sunday is 0 and it is also 7.
+   *
+   * Both spellings are ordinary crontab, `cron-parser` fires on Sunday for either, and the routine
+   * this describes is already scheduled. So this is not a shape the renderer has never been taught:
+   * it is one of its own shapes, arriving under the other of the two names its own scheduler accepts.
+   */
+  test("the scheduler fires on Sunday for either spelling", () => {
+    const from = new Date("2026-09-10T00:00:00Z");
+    expect(nextOccurrence("0 9 * * 0", "UTC", from).toISOString()).toBe(
+      nextOccurrence("0 9 * * 7", "UTC", from).toISOString(),
+    );
+    // A Sunday, so the assertion above is not two equal wrong answers.
+    expect(nextOccurrence("0 9 * * 7", "UTC", from).getUTCDay()).toBe(0);
+  });
+
+  test("a single weekday written as 7", () => {
+    expect(describeCron("0 9 * * 7")).toBe("Sundays at 09:00");
+  });
+
+  test("a listed set of weekdays ending on 7", () => {
+    expect(describeCron("0 9 * * 6,7")).toBe("Saturdays and Sundays at 09:00");
+  });
+
+  test("one day named under both of its numbers is said once", () => {
+    expect(describeCron("0 9 * * 0,7")).toBe("Sundays at 09:00");
   });
 
   test("never throws, even on garbage", () => {
