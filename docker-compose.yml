@@ -24,7 +24,7 @@ services:
       # the name and leaves the address. Proven from inside `agent-computer`, where the gateway on
       # :5432 answered and began authenticating as `openbot` on `openbot`, with the password in
       # this file. The server on the host still reaches it, because that is what loopback is.
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5436}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

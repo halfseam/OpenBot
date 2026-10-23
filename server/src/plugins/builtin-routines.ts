@@ -71,6 +71,19 @@ export function useRoutineTools(tools: RoutineTools | null): void {
  */
 const TOOLS: readonly McpTool[] = Object.freeze([
   {
+    name: "scout_scan_repos",
+    description: "Executa a varredura oficial de inteligencia tecnica do Trio Scout Sentinel no GitHub, HuggingFace e Hacker News, aplica o filtro anti-astroturfing de 100 pontos e retorna o relatorio com os repositorios aprovados e metricas observadas.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timeframe: {
+          type: "string",
+          description: "Janela de tempo para a varredura (ex: 24h)."
+        }
+      }
+    }
+  },
+  {
     name: "create_routine",
     description: [
       "Set up a standing instruction that you carry out on a schedule for the person you are talking to.",
@@ -374,6 +387,12 @@ export async function callTool(
   }
 
   try {
+        if (toolName === "scout_scan_repos") {
+      const { runScoutRoutine } = await import("../routines/scout-routine");
+      const res = await runScoutRoutine();
+      return asResult(res.output);
+    }
+
     if (toolName === "create_routine") {
       const instruction = stringArg(args, "instruction");
       if (!instruction) {
