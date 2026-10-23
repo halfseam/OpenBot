@@ -44,72 +44,72 @@ const GROUPS: {
   }[];
 }[] = [
   {
-    label: "What Bots can reach",
+    label: "Acesso dos Bots",
     items: [
       {
-        title: "Credentials",
+        title: "Credenciais",
         icon: IconKey,
         linkOptions: { to: "/admin/credentials" },
       },
       {
-        title: "Boundaries",
+        title: "Fronteiras de Segurança",
         icon: IconShieldCheck,
         linkOptions: { to: "/admin/boundaries" },
       },
       {
-        title: "Computers",
+        title: "Computadores",
         icon: IconDeviceDesktop,
         linkOptions: { to: "/admin/computers" },
       },
-    ],
-  },
-  {
-    label: "What Bots can do",
-    items: [
       {
         title: "Plugins",
         icon: IconPuzzle,
         linkOptions: { to: "/admin/plugins" },
       },
       {
-        title: "Skills",
-        icon: IconFileText,
-        linkOptions: { to: "/admin/skills" },
-      },
-      {
-        title: "UI Components",
+        title: "Componentes",
         icon: IconLayoutGrid,
         linkOptions: { to: "/admin/components" },
-      },
-      {
-        title: "Playground",
-        icon: IconCode,
-        linkOptions: { to: "/admin/playground" },
       },
     ],
   },
   {
-    label: "Who can get in",
+    label: "Pessoas & Grupos",
     items: [
       {
-        title: "People",
+        title: "Pessoas",
         icon: IconUsers,
         linkOptions: { to: "/admin/people" },
       },
       {
-        title: "Identity providers",
+        title: "Provedores de Identidade",
         icon: IconBuildingBank,
         linkOptions: { to: "/admin/identity-providers" },
       },
     ],
   },
   {
-    label: "What happened",
+    label: "Operações",
     items: [
       {
-        title: "Audit",
+        title: "Auditoria",
         icon: IconListDetails,
         linkOptions: { to: "/admin/audit" },
+      },
+      {
+        title: "Transcrições",
+        icon: IconFileText,
+        linkOptions: { to: "/admin/transcripts" },
+      },
+    ],
+  },
+  {
+    label: "Desenvolvedor",
+    items: [
+      {
+        title: "Roteamento de Modelos",
+        icon: IconCode,
+        linkOptions: { to: "/admin/routing" },
       },
     ],
   },

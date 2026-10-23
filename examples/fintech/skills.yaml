@@ -1,24 +1,3 @@
-# Skills this deployment ships, and the tools each one needs.
-#
-# A skill is a named instruction anybody here can invoke with `/`. It adds no capability: it can only
-# ask a Bot to use what that Bot was already granted, and every one of those calls is still decided,
-# policy-checked and recorded.
-#
-# `tools:` is the second thing a skill is for, and the reason this file exists rather than a screen.
-# A Bot holding more than a handful of tools is offered, per run, only the tools of the skills that
-# match the message, because a model picks the right tool reliably out of about ten and unreliably
-# out of thirty. That matching needs skills to match against, and a deployment starts with none — so
-# left to a screen, the narrowing is switched off on every clone until somebody maps tools to skills
-# by hand, in each deployment, again after each new connector. Shipping the declaration with the
-# skill is what makes connecting a connector the only step.
-#
-# NAMING A TOOL HERE GRANTS NOBODY ANYTHING. What a Bot may call is its grants, and the offer is
-# always intersected with them: a skill naming a tool its Bot does not hold loads nothing. So this
-# file may name tools for connectors this deployment has not added, and should — that is what makes
-# them work the moment somebody does.
-#
-# Refs are `<serverId>/<toolName>`, the same form a grant is written in. `google-drive` and `notion`
-# are catalogue connectors; a server an administrator adds by URL uses the id it was given.
 skills:
   - slug: find-a-document
     title: Find a document
@@ -33,48 +12,33 @@ skills:
       - google-drive/read_file_content
       - google-drive/get_file_metadata
 
-  - slug: find-a-notion-page
-    title: Find a Notion page
-    summary: Search Notion for a page and read what it says.
+  - slug: scout-tiktok-shop
+    title: Scout TikTok Shop Stealth
+    summary: Raspa produtos em alta e lojas no TikTok Shop ES/US usando o motor Stealth sem bloqueios.
     instructions: >-
-      Find the Notion page the person is asking about before answering anything about its contents.
-      Search first, then fetch the page you found rather than answering from its title. If the search
-      returns nothing, say so and say what you searched for, rather than guessing at what the page
-      might contain. Name the page you used.
+      Pesquise produtos virais e concorrentes no TikTok Shop Espanha (ES) ou Estados Unidos (US).
+      Utilize a ferramenta de busca stealth do Scrapling para extrair titulos, estimativas de vendas,
+      precos e ganchos de dor/beneficio recomendados para a esteira Mercury-UGC.
     tools:
-      - notion/notion-search
-      - notion/notion-fetch
+      - scrapling/scout_tiktok_shop_products
 
-  - slug: whats-changed
-    title: What changed recently
-    summary: List recently changed documents and say who changed them and when.
+  - slug: script-ugc-15s
+    title: 15s UGC Scriptwriting Framework
+    summary: Cria roteiros de alta conversao de 15 segundos para produtos fisicos no TikTok Shop.
     instructions: >-
-      List what has changed recently in the sources you can reach, newest first. Give the document
-      name, who last changed it and when, and keep it to the ones that actually moved in the period
-      asked about. Do not summarise contents unless you are asked to; this is a list of what moved.
-    tools:
-      - google-drive/list_recent_files
-      - google-drive/get_file_metadata
+      Escreva um roteiro de 15 segundos seguindo os 3 atos obrigatorios:
+      1. 0-3s: Gancho de impacto (dor ou curiosidade).
+      2. 3-12s: Demonstracao visual do produto e quebra de objecao.
+      3. 12-15s: CTA direto para o link/carrinho do TikTok Shop.
+      Mantenha o limite maximo de 45 palavras em espanhol natural (Lucia Martinez) e mostre a contagem final.
 
-  - slug: who-owns-this
-    title: Who owns this
-    summary: Find who owns a document and when they last touched it.
+  - slug: social-trend-scout
+    title: Social Trend & Retention Scout
+    summary: Mapeia tendencias e videos virais no Instagram/Facebook (LuxUndone) e YouTube Shorts (CrushCockpit).
     instructions: >-
-      Identify the owner of the document being asked about, and say when it was last changed. Search
-      for the document first if you were given a name rather than a link. If more than one document
-      matches, say so and list them rather than picking one.
+      Pesquise e analise conteudos virais do nicho automotivo:
+      - Para LuxUndone: Foque em ASMR, detalhes visuais e copys de engajamento no Instagram e Facebook.
+      - Para CrushCockpit: Foque em loops de 7-8 segundos com alta retencao no YouTube Shorts.
+      Extraia metricas publicas de engajamento sem depender de credenciais de login.
     tools:
-      - google-drive/search_files
-      - google-drive/get_file_metadata
-
-  - slug: check-a-claim
-    title: Check a claim against a source
-    summary: Take a statement and check it against what the documents actually say.
-    instructions: >-
-      You are checking a claim, not answering a question. Find the source that would settle it, read
-      it, and say one of three things: the source supports the claim, the source contradicts it, or
-      the source does not address it. Quote the sentence you are relying on. Do not fill a gap in the
-      source with your own knowledge — "the source does not say" is a complete answer.
-    tools:
-      - google-drive/search_files
-      - google-drive/read_file_content
+      - social/scout_social_trends

@@ -48,7 +48,7 @@ export function DetailPanel({
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex flex-1 min-w-0 flex-col">{children}</div>
+      <div className="flex flex-1 min-w-0 flex-col overflow-y-auto">{children}</div>
       <motion.div
         animate={{ width: open ? detailWidth : 0 }}
         className="shrink-0 overflow-hidden"

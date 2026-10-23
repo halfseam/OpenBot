@@ -1075,7 +1075,7 @@ const asChannelSocket = (ws: { data: SocketData }) =>
   ws as unknown as ChannelSocket;
 
 serve<SocketData>({
-  port,
+  port, hostname: "127.0.0.1",
   async fetch(request, server) {
     const url = new URL(request.url);
     const streamBotId = streamPathBotId(url.pathname);

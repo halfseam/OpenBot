@@ -1,16 +1,63 @@
 channels:
+  # MERCURY-UGC
+  - id: mercury-radar
+    name: 🛍️ Mercury Radar
+    description: Pesquisa de produtos em alta e lojas no TikTok Shop.
+    permitted_agents: [mercury-radar]
+    allowed_groups: [all]
+  - id: mercury-script
+    name: ✍️ Mercury Scriptwriter
+    description: Criacao de roteiros curtos de 15 segundos (Hook + Dor + CTA).
+    permitted_agents: [mercury-script]
+    allowed_groups: [all]
+  - id: mercury-compliance
+    name: 🛡️ Mercury Compliance
+    description: Auditoria de brand safety e orientacao da folha 9-Grid.
+    permitted_agents: [mercury-compliance]
+    allowed_groups: [all]
+
+  # LUXUNDONE
+  - id: luxundone-radar
+    name: 🏎️ LuxUndone Radar
+    description: Pesquisa de referencias ASMR e Shorts de 7-8s com alta retencao.
+    permitted_agents: [luxundone-radar]
+    allowed_groups: [all]
+  - id: luxundone-qa
+    name: 🔍 LuxUndone QA & C2PA
+    description: Inspecao de frames e remocao de metadados C2PA via FFmpeg.
+    permitted_agents: [luxundone-qa-cleaner]
+    allowed_groups: [all]
+  - id: luxundone-staging
+    name: 📦 LuxUndone Staging
+    description: Redacao de copys em 5 blocos e preparacao de rascunhos.
+    permitted_agents: [luxundone-staging]
+    allowed_groups: [all]
+
+  # KRONOS-FACELESS
+  - id: kronos-research
+    name: 📜 Kronos Research
+    description: Pesquisa de pautas historicas, misterios e fatos virais.
+    permitted_agents: [kronos-researcher]
+    allowed_groups: [all]
+  - id: kronos-script
+    name: 🎙️ Kronos Storyteller
+    description: Roteiros long-form de suspense com retencao e open-loops.
+    permitted_agents: [kronos-storyteller]
+    allowed_groups: [all]
+  - id: kronos-visuals
+    name: 🎨 Kronos Prompter
+    description: Engenharia de prompts de imagem cinematicos cena a cena.
+    permitted_agents: [kronos-prompter]
+    allowed_groups: [all]
+
+  # OPERACAO GERAL
   - id: general-assistant
-    name: General Assistant
-    description: Ask for help with everyday work.
+    name: ⚡ General Assistant
+    description: Suporte a codigo, automacoes e tarefas gerais do LifeOS.
     permitted_agents: [general-assistant]
     allowed_groups: [all]
-  - id: risk-and-compliance
-    name: Risk & Compliance
-    description: Investigate policies, transaction monitoring, and control evidence.
-    permitted_agents: [knowledge, risk-analyst]
-    allowed_groups: [risk, compliance]
   - id: company-knowledge
-    name: Company Knowledge
-    description: Find authorized answers from company documents.
+    name: 📚 Knowledge Base
+    description: Base de conhecimento, documentacao e specs tecnicas.
     permitted_agents: [knowledge]
     allowed_groups: [all]

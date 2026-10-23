@@ -30,6 +30,6 @@
   "devDependencies": {
     "@copilotkit/aimock": "1.39.0",
     "drizzle-kit": "^0.31.10",
-    "eventsource": "3.0.7"
+    "eventsource": "2.0.2"
   }
 }

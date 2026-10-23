@@ -291,14 +291,14 @@ export function Composer({
           <IconPlus className="size-5" />
         </Button>
         <PromptArea
-          aria-label="Message"
+          aria-label="Mensagem"
           className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm shadow-none"
           disabled={disabled}
           maxHeight={COMPACT_MAX_HEIGHT_PX}
           minHeight={COMPACT_MIN_HEIGHT_PX}
           onChange={handleChange}
           onSubmit={submitDraft}
-          placeholder="Ask anything"
+          placeholder="Pergunte qualquer coisa..."
           ref={promptAreaRef}
           triggers={triggers}
           value={value}
@@ -340,14 +340,14 @@ export function Composer({
 
         <div className="grow px-3 pt-3 pb-2">
           <PromptArea
-            aria-label="Message"
+            aria-label="Mensagem"
             autoGrow
             className="w-full border-0 bg-transparent p-0 text-sm shadow-none"
             disabled={disabled}
             maxHeight={MAX_HEIGHT_PX}
             onChange={handleChange}
             onSubmit={submitDraft}
-            placeholder="Ask anything"
+            placeholder="Pergunte qualquer coisa..."
             ref={promptAreaRef}
             triggers={triggers}
             value={value}

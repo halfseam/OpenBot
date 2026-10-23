@@ -32,7 +32,7 @@ const ITEMS: {
   title: string;
 }[] = [
   {
-    title: "General",
+    title: "Geral",
     icon: IconSettings,
     /* `/settings` prefixes every other route here, and would otherwise light up on all of them. */
     exact: true,
@@ -43,13 +43,13 @@ const ITEMS: {
      * The same subject as Admin's Plugins, from the other side: there an administrator decides what
      * this deployment may reach at all, here you decide what it may reach as you.
      */
-    title: "Connected accounts",
+    title: "Contas Conectadas",
     icon: IconPlug,
     linkOptions: { to: "/settings/connected-accounts" },
   },
   {
     /* The same mark Admin gives UI Components. It is the same subject seen from the other side. */
-    title: "Components gallery",
+    title: "Galeria de Componentes",
     icon: IconLayoutGrid,
     linkOptions: { to: "/settings/components-gallery" },
   },
